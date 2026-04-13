@@ -210,18 +210,11 @@ const ImageProcessor = (() => {
 
   // ─────────────────────────────────────────────
   // 9×9 セル ImageData[][] を抽出する
+  // 改善: セル単位の閾値処理 + グリッド線除去 + ノイズ除去
   // ─────────────────────────────────────────────
   function _extractCells(warpedMat) {
-    // グレースケール + 閾値処理
-    const gray   = new cv.Mat();
-    const thresh = new cv.Mat();
+    const gray = new cv.Mat();
     cv.cvtColor(warpedMat, gray, cv.COLOR_RGBA2GRAY);
-    cv.adaptiveThreshold(
-      gray, thresh, 255,
-      cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-      cv.THRESH_BINARY_INV,
-      11, 2
-    );
 
     const CS = Math.floor(CELL_SIZE);
     const cells = [];
@@ -233,30 +226,95 @@ const ImageProcessor = (() => {
     for (let row = 0; row < 9; row++) {
       cells[row] = [];
       for (let col = 0; col < 9; col++) {
-        const x = col * CELL_SIZE;
-        const y = row * CELL_SIZE;
+        const x = Math.round(col * CELL_SIZE);
+        const y = Math.round(row * CELL_SIZE);
 
-        // ROI (margin: 15% — グリッド線を確実に除去)
-        const margin = Math.floor(CS * 0.15);
-        const roi = thresh.roi(new cv.Rect(
-          Math.round(x) + margin,
-          Math.round(y) + margin,
-          CS - margin * 2,
-          CS - margin * 2
-        ));
+        // セルのグレースケール ROI を取得
+        const cellGray = gray.roi(new cv.Rect(x, y, CS, CS));
 
-        const roiCanvas = _matToCanvas(roi, CS - margin * 2, CS - margin * 2);
+        // ガウシアンブラーで微小ノイズを軽減
+        const blurred = new cv.Mat();
+        cv.GaussianBlur(cellGray, blurred, new cv.Size(5, 5), 0);
+
+        // セル単位で適応的閾値処理（グローバル閾値より各セルの照明条件に適応）
+        const cellThresh = new cv.Mat();
+        // blockSize はセルサイズの約30%（数字のストローク幅より十分大きく、
+        // セル全体よりは小さい値）で、局所的な明暗差を適切に捉える
+        let blockSize = Math.max(5, Math.round(CS * 0.3));
+        if (blockSize % 2 === 0) blockSize++;
+        cv.adaptiveThreshold(
+          blurred, cellThresh, 255,
+          cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+          cv.THRESH_BINARY_INV,
+          blockSize, 7
+        );
+
+        // グリッド線除去: 境界ピクセルをゼロ化して線と数字の接続を切断
+        const borderW = Math.max(3, Math.floor(CS * 0.08));
+        _clearCellBorder(cellThresh, borderW);
+
+        // ノイズ除去: 小さな連結成分を除去
+        _removeSmallComponents(cellThresh, CS);
+
+        // ImageData に変換
+        const roiCanvas = _matToCanvas(cellThresh, CS, CS);
         tmpCtx.clearRect(0, 0, CS, CS);
-        tmpCtx.drawImage(roiCanvas, margin, margin);
+        tmpCtx.drawImage(roiCanvas, 0, 0);
         cells[row][col] = tmpCtx.getImageData(0, 0, CS, CS);
 
-        roi.delete();
+        cellGray.delete();
+        blurred.delete();
+        cellThresh.delete();
       }
     }
 
     gray.delete();
-    thresh.delete();
     return cells;
+  }
+
+  /**
+   * セル画像の境界領域をゼロ化してグリッド線と数字の接続を切断する
+   */
+  function _clearCellBorder(mat, borderWidth) {
+    const h = mat.rows;
+    const w = mat.cols;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (y < borderWidth || y >= h - borderWidth ||
+            x < borderWidth || x >= w - borderWidth) {
+          mat.ucharPtr(y, x)[0] = 0;
+        }
+      }
+    }
+  }
+
+  /**
+   * 小さな連結成分をノイズとして除去する
+   */
+  function _removeSmallComponents(mat, cellSize) {
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    const src = mat.clone();
+    cv.findContours(src, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    src.delete();
+
+    // セル面積の1%未満の成分はノイズとみなす（数字は通常セル面積の5%以上を占める）
+    const minArea = cellSize * cellSize * 0.01;
+    const result = cv.Mat.zeros(mat.rows, mat.cols, cv.CV_8UC1);
+
+    for (let i = 0; i < contours.size(); i++) {
+      const cnt = contours.get(i);
+      const area = cv.contourArea(cnt);
+      if (area >= minArea) {
+        cv.drawContours(result, contours, i, new cv.Scalar(255), cv.FILLED);
+      }
+      cnt.delete();
+    }
+
+    result.copyTo(mat);
+    result.delete();
+    contours.delete();
+    hierarchy.delete();
   }
 
   // ─────────────────────────────────────────────
