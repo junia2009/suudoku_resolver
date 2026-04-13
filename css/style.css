@@ -242,7 +242,7 @@ canvas {
   display: grid;
   grid-template-columns: repeat(9, 1fr);
   gap: 1px;
-  background: #334155;
+  background: #cbd5e1;
   border: 3px solid #334155;
   border-radius: 6px;
   overflow: hidden;
@@ -266,10 +266,17 @@ canvas {
   aspect-ratio: 1;
 }
 
-/* 3x3ブロック境界線 */
-.sudoku-cell:nth-child(3n) { border-right: 2px solid #334155; }
-.sudoku-cell:nth-child(n+19):nth-child(-n+27) { border-bottom: 2px solid #334155; }
-.sudoku-cell:nth-child(n+46):nth-child(-n+54) { border-bottom: 2px solid #334155; }
+/* 3x3ブロック境界線 (縦) */
+.sudoku-cell[data-col="2"],
+.sudoku-cell[data-col="5"] {
+  border-right: 2px solid #334155;
+}
+
+/* 3x3ブロック境界線 (横) */
+.sudoku-cell[data-row="2"],
+.sudoku-cell[data-row="5"] {
+  border-bottom: 2px solid #334155;
+}
 
 .sudoku-cell.given { color: var(--given-color); background: #f1f5f9; }
 .sudoku-cell.solved { color: var(--solved-color); }
