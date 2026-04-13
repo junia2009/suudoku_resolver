@@ -238,6 +238,8 @@ const ImageProcessor = (() => {
 
         // セル単位で適応的閾値処理（グローバル閾値より各セルの照明条件に適応）
         const cellThresh = new cv.Mat();
+        // blockSize はセルサイズの約30%（数字のストローク幅より十分大きく、
+        // セル全体よりは小さい値）で、局所的な明暗差を適切に捉える
         let blockSize = Math.max(5, Math.round(CS * 0.3));
         if (blockSize % 2 === 0) blockSize++;
         cv.adaptiveThreshold(
@@ -296,16 +298,17 @@ const ImageProcessor = (() => {
     cv.findContours(src, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
     src.delete();
 
+    // セル面積の1%未満の成分はノイズとみなす（数字は通常セル面積の5%以上を占める）
     const minArea = cellSize * cellSize * 0.01;
     const result = cv.Mat.zeros(mat.rows, mat.cols, cv.CV_8UC1);
 
     for (let i = 0; i < contours.size(); i++) {
       const cnt = contours.get(i);
       const area = cv.contourArea(cnt);
-      cnt.delete();
       if (area >= minArea) {
         cv.drawContours(result, contours, i, new cv.Scalar(255), cv.FILLED);
       }
+      cnt.delete();
     }
 
     result.copyTo(mat);
