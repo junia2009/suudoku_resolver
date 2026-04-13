@@ -10,14 +10,127 @@ const SudokuSolver = (() => {
 
   // ─────────────────────────────────────────────
   // メインsolve関数 (入力配列を直接変更しないようコピーする)
+  // 制約伝播 → バックトラッキングの2段階で解く
   // ─────────────────────────────────────────────
   function solve(inputGrid) {
     if (!validate(inputGrid)) return null;
 
     // ディープコピー
     const grid = inputGrid.map(row => [...row]);
+
+    // 制約伝播で確定できるセルを先に埋める
+    if (!_propagate(grid)) return null;
+
     const result = _backtrack(grid);
     return result ? grid : null;
+  }
+
+  // ─────────────────────────────────────────────
+  // 制約伝播: Naked Singles + Hidden Singles を繰り返し適用
+  // バックトラッキング前に確定セルを埋めて探索空間を縮小する
+  // ─────────────────────────────────────────────
+  function _propagate(grid) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+
+      // Naked Singles: 候補が1つしかないセルを確定
+      for (let row = 0; row < 9; row++) {
+        for (let col = 0; col < 9; col++) {
+          if (grid[row][col] !== 0) continue;
+
+          const candidates = [];
+          for (let num = 1; num <= 9; num++) {
+            if (_isValid(grid, row, col, num)) candidates.push(num);
+          }
+
+          if (candidates.length === 0) return false; // 矛盾
+          if (candidates.length === 1) {
+            grid[row][col] = candidates[0];
+            changed = true;
+          }
+        }
+      }
+
+      // Hidden Singles: 行・列・ブロック内で特定の数字が
+      // 1箇所にしか入れないセルを確定
+      // 1つ確定したら即座にwhile loopを再開して整合性を保つ
+      let hiddenFound = false;
+      for (let num = 1; num <= 9 && !hiddenFound; num++) {
+        // 行
+        for (let row = 0; row < 9 && !hiddenFound; row++) {
+          if (grid[row].includes(num)) continue;
+          let onlyCol = -1;
+          let count = 0;
+          for (let col = 0; col < 9; col++) {
+            if (grid[row][col] === 0 && _isValid(grid, row, col, num)) {
+              onlyCol = col;
+              count++;
+              if (count > 1) break;
+            }
+          }
+          if (count === 1) {
+            grid[row][onlyCol] = num;
+            changed = true;
+            hiddenFound = true;
+          }
+          // count === 0 は矛盾だが、Naked Singlesで検出済みなのでスキップ
+        }
+
+        // 列
+        for (let col = 0; col < 9 && !hiddenFound; col++) {
+          let hasNum = false;
+          for (let r = 0; r < 9; r++) { if (grid[r][col] === num) { hasNum = true; break; } }
+          if (hasNum) continue;
+          let onlyRow = -1;
+          let count = 0;
+          for (let row = 0; row < 9; row++) {
+            if (grid[row][col] === 0 && _isValid(grid, row, col, num)) {
+              onlyRow = row;
+              count++;
+              if (count > 1) break;
+            }
+          }
+          if (count === 1) {
+            grid[onlyRow][col] = num;
+            changed = true;
+            hiddenFound = true;
+          }
+        }
+
+        // 3×3 ブロック
+        for (let br = 0; br < 9 && !hiddenFound; br += 3) {
+          for (let bc = 0; bc < 9 && !hiddenFound; bc += 3) {
+            let hasNum = false;
+            for (let r = br; r < br + 3 && !hasNum; r++) {
+              for (let c = bc; c < bc + 3 && !hasNum; c++) {
+                if (grid[r][c] === num) hasNum = true;
+              }
+            }
+            if (hasNum) continue;
+            let onlyR = -1, onlyC = -1;
+            let count = 0;
+            for (let r = br; r < br + 3; r++) {
+              for (let c = bc; c < bc + 3; c++) {
+                if (grid[r][c] === 0 && _isValid(grid, r, c, num)) {
+                  onlyR = r;
+                  onlyC = c;
+                  count++;
+                  if (count > 1) break;
+                }
+              }
+              if (count > 1) break;
+            }
+            if (count === 1) {
+              grid[onlyR][onlyC] = num;
+              changed = true;
+              hiddenFound = true;
+            }
+          }
+        }
+      }
+    }
+    return true;
   }
 
   // ─────────────────────────────────────────────
@@ -25,7 +138,8 @@ const SudokuSolver = (() => {
   // ─────────────────────────────────────────────
   function _backtrack(grid) {
     const cell = _findEmptyCell(grid);
-    if (!cell) return true; // すべて埋まった
+    if (cell === null) return true; // すべて埋まった (成功)
+    if (cell === false) return false; // 矛盾 (候補0のセルあり)
 
     const [row, col] = cell;
 
@@ -42,7 +156,7 @@ const SudokuSolver = (() => {
 
   // ─────────────────────────────────────────────
   // MRV ヒューリスティック: 候補数が最小の空白セルを選ぶ
-  // (最小残余値 = Minimum Remaining Values)
+  // 戻り値: [row, col] | null (全セル確定) | false (矛盾)
   // ─────────────────────────────────────────────
   function _findEmptyCell(grid) {
     let minCandidates = 10;
@@ -57,7 +171,7 @@ const SudokuSolver = (() => {
           if (_isValid(grid, row, col, num)) count++;
         }
 
-        if (count === 0) return null; // 矛盾 (解なし)
+        if (count === 0) return false; // 矛盾 (解なし)
         if (count < minCandidates) {
           minCandidates = count;
           bestCell = [row, col];
@@ -66,7 +180,7 @@ const SudokuSolver = (() => {
       }
     }
 
-    return bestCell;
+    return bestCell; // null = 全セル埋まった
   }
 
   // ─────────────────────────────────────────────
@@ -133,7 +247,8 @@ const SudokuSolver = (() => {
     function bt() {
       if (count >= max) return;
       const cell = _findEmptyCell(grid);
-      if (!cell) { count++; return; }
+      if (cell === null) { count++; return; }
+      if (cell === false) return; // 矛盾
 
       const [row, col] = cell;
       for (let num = 1; num <= 9; num++) {

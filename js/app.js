@@ -109,9 +109,23 @@ function _bindStepButtons() {
       AppState.recognizedGrid = grid;
       AppState.editedGrid     = grid.map(r => [...r]);
 
+      // 認識結果のサニティチェック
+      const givenCount = grid.flat().filter(v => v !== 0).length;
+      if (givenCount < 10) {
+        console.warn(`認識されたヒント数が少なすぎます: ${givenCount}個`);
+      } else if (givenCount > 40) {
+        console.warn(`認識されたヒント数が多すぎます: ${givenCount}個`);
+      }
+
       // 認識結果の given マスク (0以外 = given)
       UI.renderGrid('sudoku-input-grid', AppState.editedGrid, true);
       UI.hideLoading();
+
+      // ヒント数警告
+      if (givenCount < 10) {
+        alert(`認識されたヒント数が${givenCount}個と少なめです。\n画像が鮮明か確認し、必要に応じて手動で修正してください。`);
+      }
+
       UI.showStep(3);
     } catch (e) {
       UI.hideLoading();

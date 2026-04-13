@@ -15,7 +15,7 @@
  */
 
 const ImageProcessor = (() => {
-  const WARP_SIZE = 450; // 歪み補正後の正方形サイズ (px)
+  const WARP_SIZE = 540; // 歪み補正後の正方形サイズ (px) — 9×60で高解像度
   const CELL_SIZE = WARP_SIZE / 9;
 
   let _cvReady = false;
@@ -50,20 +50,50 @@ const ImageProcessor = (() => {
       thresh  = new cv.Mat();
 
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.GaussianBlur(gray, blurred, new cv.Size(9, 9), 0);
-      cv.adaptiveThreshold(
-        blurred, thresh, 255,
-        cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv.THRESH_BINARY_INV,
-        11, 2
-      );
 
-      // モルフォロジー演算でノイズ除去
-      const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-      cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, kernel);
-      kernel.delete();
+      // コントラスト正規化: CLAHE が使えれば使い、なければ通常のequalizeHist
+      let equalized;
+      try {
+        const clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+        equalized = new cv.Mat();
+        clahe.apply(gray, equalized);
+        clahe.delete();
+      } catch (_claheErr) {
+        equalized = new cv.Mat();
+        cv.equalizeHist(gray, equalized);
+      }
 
-      const corners = _findGridCorners(thresh, src.cols, src.rows);
+      cv.GaussianBlur(equalized, blurred, new cv.Size(9, 9), 0);
+
+      // マルチ閾値戦略: 異なるパラメータで試行して最良のグリッド検出を行う
+      const threshConfigs = [
+        { blockSize: 11, C: 2 },
+        { blockSize: 15, C: 3 },
+        { blockSize: 21, C: 5 },
+        { blockSize: 7,  C: 2 },
+      ];
+
+      let corners = null;
+      for (const cfg of threshConfigs) {
+        const t = new cv.Mat();
+        cv.adaptiveThreshold(
+          blurred, t, 255,
+          cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+          cv.THRESH_BINARY_INV,
+          cfg.blockSize, cfg.C
+        );
+
+        const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        cv.morphologyEx(t, t, cv.MORPH_CLOSE, kernel);
+        kernel.delete();
+
+        corners = _findGridCorners(t, src.cols, src.rows);
+        if (!thresh.rows) { t.copyTo(thresh); } // 最初の閾値結果を保持
+        t.delete();
+        if (corners) break;
+      }
+
+      equalized.delete();
 
       if (!corners) {
         // 自動検出失敗 → 手動モードへ
@@ -210,11 +240,27 @@ const ImageProcessor = (() => {
 
   // ─────────────────────────────────────────────
   // 9×9 セル ImageData[][] を抽出する
-  // 改善: セル単位の閾値処理 + グリッド線除去 + ノイズ除去
+  // Hough線検出 → グリッド交点からセル境界を精密決定
+  // フォールバック: 均等分割
   // ─────────────────────────────────────────────
   function _extractCells(warpedMat) {
     const gray = new cv.Mat();
     cv.cvtColor(warpedMat, gray, cv.COLOR_RGBA2GRAY);
+
+    // コントラスト正規化: CLAHE→equalizeHistフォールバック
+    let grayEq;
+    try {
+      const clahe = new cv.CLAHE(2.0, new cv.Size(4, 4));
+      grayEq = new cv.Mat();
+      clahe.apply(gray, grayEq);
+      clahe.delete();
+    } catch (_claheErr) {
+      grayEq = new cv.Mat();
+      cv.equalizeHist(gray, grayEq);
+    }
+
+    // Hough線検出でグリッド線の正確な位置を特定
+    const gridLines = _detectGridLines(grayEq);
 
     const CS = Math.floor(CELL_SIZE);
     const cells = [];
@@ -226,21 +272,38 @@ const ImageProcessor = (() => {
     for (let row = 0; row < 9; row++) {
       cells[row] = [];
       for (let col = 0; col < 9; col++) {
-        const x = Math.round(col * CELL_SIZE);
-        const y = Math.round(row * CELL_SIZE);
+        let x, y, w, h;
+        if (gridLines) {
+          // Hough線検出結果からセル座標を取得
+          x = gridLines.vLines[col];
+          y = gridLines.hLines[row];
+          w = gridLines.vLines[col + 1] - x;
+          h = gridLines.hLines[row + 1] - y;
+        } else {
+          // フォールバック: 均等分割
+          x = Math.round(col * CELL_SIZE);
+          y = Math.round(row * CELL_SIZE);
+          w = CS;
+          h = CS;
+        }
+
+        // 範囲チェック
+        x = Math.max(0, Math.min(x, grayEq.cols - 1));
+        y = Math.max(0, Math.min(y, grayEq.rows - 1));
+        w = Math.min(w, grayEq.cols - x);
+        h = Math.min(h, grayEq.rows - y);
+        if (w < 5 || h < 5) { w = CS; h = CS; x = col * CS; y = row * CS; }
 
         // セルのグレースケール ROI を取得
-        const cellGray = gray.roi(new cv.Rect(x, y, CS, CS));
+        const cellGray = grayEq.roi(new cv.Rect(x, y, w, h));
 
         // ガウシアンブラーで微小ノイズを軽減
         const blurred = new cv.Mat();
-        cv.GaussianBlur(cellGray, blurred, new cv.Size(5, 5), 0);
+        cv.GaussianBlur(cellGray, blurred, new cv.Size(3, 3), 0);
 
-        // セル単位で適応的閾値処理（グローバル閾値より各セルの照明条件に適応）
+        // セル単位で適応的閾値処理
         const cellThresh = new cv.Mat();
-        // blockSize はセルサイズの約30%（数字のストローク幅より十分大きく、
-        // セル全体よりは小さい値）で、局所的な明暗差を適切に捉える
-        let blockSize = Math.max(5, Math.round(CS * 0.3));
+        let blockSize = Math.max(5, Math.round(Math.min(w, h) * 0.3));
         if (blockSize % 2 === 0) blockSize++;
         cv.adaptiveThreshold(
           blurred, cellThresh, 255,
@@ -249,15 +312,18 @@ const ImageProcessor = (() => {
           blockSize, 7
         );
 
-        // グリッド線除去: 境界ピクセルをゼロ化して線と数字の接続を切断
-        const borderW = Math.max(3, Math.floor(CS * 0.08));
+        // グリッド線除去: 境界ピクセルをゼロ化
+        const borderW = Math.max(3, Math.floor(Math.min(w, h) * 0.08));
         _clearCellBorder(cellThresh, borderW);
 
         // ノイズ除去: 小さな連結成分を除去
-        _removeSmallComponents(cellThresh, CS);
+        _removeSmallComponents(cellThresh, Math.min(w, h));
 
-        // ImageData に変換
-        const roiCanvas = _matToCanvas(cellThresh, CS, CS);
+        // 統一サイズ (CS×CS) にリサイズして ImageData に変換
+        const resized = new cv.Mat();
+        cv.resize(cellThresh, resized, new cv.Size(CS, CS));
+
+        const roiCanvas = _matToCanvas(resized, CS, CS);
         tmpCtx.clearRect(0, 0, CS, CS);
         tmpCtx.drawImage(roiCanvas, 0, 0);
         cells[row][col] = tmpCtx.getImageData(0, 0, CS, CS);
@@ -265,11 +331,101 @@ const ImageProcessor = (() => {
         cellGray.delete();
         blurred.delete();
         cellThresh.delete();
+        resized.delete();
       }
     }
 
     gray.delete();
+    grayEq.delete();
     return cells;
+  }
+
+  // ─────────────────────────────────────────────
+  // Hough線検出でグリッド線の位置を検出する
+  // 水平線10本 + 垂直線10本（9×9グリッドの境界）を特定
+  // ─────────────────────────────────────────────
+  function _detectGridLines(grayMat) {
+    try {
+      const edges = new cv.Mat();
+      cv.Canny(grayMat, edges, 50, 150);
+
+      // モルフォロジーで線を強調
+      const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+      cv.dilate(edges, edges, kernel);
+      kernel.delete();
+
+      const lines = new cv.Mat();
+      cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 80,
+        Math.round(WARP_SIZE * 0.4), Math.round(WARP_SIZE * 0.05));
+
+      const hLines = []; // 水平線のy座標
+      const vLines = []; // 垂直線のx座標
+
+      for (let i = 0; i < lines.rows; i++) {
+        const x1 = lines.data32S[i * 4];
+        const y1 = lines.data32S[i * 4 + 1];
+        const x2 = lines.data32S[i * 4 + 2];
+        const y2 = lines.data32S[i * 4 + 3];
+
+        const angle = Math.abs(Math.atan2(y2 - y1, x2 - x1));
+        if (angle < 0.15) {
+          // ほぼ水平
+          hLines.push(Math.round((y1 + y2) / 2));
+        } else if (angle > Math.PI / 2 - 0.15) {
+          // ほぼ垂直
+          vLines.push(Math.round((x1 + x2) / 2));
+        }
+      }
+
+      edges.delete();
+      lines.delete();
+
+      // クラスタリング: 近い線をグループ化して10本ずつに絞る
+      const hClusters = _clusterLines(hLines, WARP_SIZE, 10);
+      const vClusters = _clusterLines(vLines, WARP_SIZE, 10);
+
+      if (hClusters.length !== 10 || vClusters.length !== 10) {
+        console.log(`Hough線検出: 水平${hClusters.length}本, 垂直${vClusters.length}本 → 均等分割にフォールバック`);
+        return null;
+      }
+
+      hClusters.sort((a, b) => a - b);
+      vClusters.sort((a, b) => a - b);
+
+      console.log('Hough線検出成功:', { hLines: hClusters, vLines: vClusters });
+      return { hLines: hClusters, vLines: vClusters };
+    } catch (e) {
+      console.warn('Hough線検出失敗:', e);
+      return null;
+    }
+  }
+
+  /**
+   * 近接する線座標をクラスタリングして expectedCount 本に絞る
+   */
+  function _clusterLines(lineCoords, totalSize, expectedCount) {
+    if (lineCoords.length === 0) return [];
+
+    lineCoords.sort((a, b) => a - b);
+    const minGap = totalSize / (expectedCount * 3); // クラスタ間最小距離
+    const clusters = [];
+    let currentCluster = [lineCoords[0]];
+
+    for (let i = 1; i < lineCoords.length; i++) {
+      if (lineCoords[i] - lineCoords[i - 1] < minGap) {
+        currentCluster.push(lineCoords[i]);
+      } else {
+        clusters.push(currentCluster);
+        currentCluster = [lineCoords[i]];
+      }
+    }
+    clusters.push(currentCluster);
+
+    // 各クラスタの中央値を取る
+    return clusters.map(c => {
+      c.sort((a, b) => a - b);
+      return c[Math.floor(c.length / 2)];
+    });
   }
 
   /**
