@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>数独解読アプリ</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>数独解読アプリ</h1>
+      <p class="subtitle">写真を撮影 or 選択して数独を自動解読</p>
+    </header>
+
+    <!-- ステップインジケーター -->
+    <div id="step-indicator">
+      <div class="step active" data-step="1"><span>1</span> 画像入力</div>
+      <div class="step" data-step="2"><span>2</span> 補正確認</div>
+      <div class="step" data-step="3"><span>3</span> 認識確認</div>
+      <div class="step" data-step="4"><span>4</span> 解答</div>
+    </div>
+
+    <!-- ステップ1: 画像入力 -->
+    <section id="step-1" class="step-section active">
+      <div class="card">
+        <h2>画像を入力してください</h2>
+        <div class="input-buttons">
+          <button id="btn-camera" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            カメラで撮影
+          </button>
+          <button id="btn-gallery" class="btn btn-secondary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+            ギャラリーから選択
+          </button>
+        </div>
+        <!-- 隠し input -->
+        <input type="file" id="input-camera" accept="image/*" capture="environment" style="display:none" />
+        <input type="file" id="input-gallery" accept="image/*" style="display:none" />
+
+        <!-- プレビュー -->
+        <div id="preview-container" class="hidden">
+          <canvas id="canvas-preview"></canvas>
+          <button id="btn-next-1" class="btn btn-success">次へ → 補正処理</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ステップ2: 歪み補正確認 -->
+    <section id="step-2" class="step-section hidden">
+      <div class="card">
+        <h2>補正結果を確認</h2>
+        <p class="hint">数独グリッドが正しく検出されているか確認してください。</p>
+        <div class="canvas-row">
+          <div class="canvas-wrap">
+            <label>元画像 (検出枠)</label>
+            <canvas id="canvas-detected"></canvas>
+          </div>
+          <div class="canvas-wrap">
+            <label>補正後</label>
+            <canvas id="canvas-warped"></canvas>
+          </div>
+        </div>
+        <div id="detection-error" class="error-msg hidden">
+          グリッドを自動検出できませんでした。手動で4隅を選択してください。
+          <div id="manual-hint">画像上の数独の4隅を左上→右上→右下→左下の順にタップしてください</div>
+        </div>
+        <div class="btn-row">
+          <button id="btn-back-2" class="btn btn-ghost">← 戻る</button>
+          <button id="btn-next-2" class="btn btn-success">次へ → 数字認識</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ステップ3: 数字認識確認 -->
+    <section id="step-3" class="step-section hidden">
+      <div class="card">
+        <h2>認識結果を確認・修正</h2>
+        <p class="hint">誤認識があればセルをタップして修正できます。0は空白を意味します。</p>
+        <div id="sudoku-input-grid" class="sudoku-grid"></div>
+        <div class="btn-row">
+          <button id="btn-back-3" class="btn btn-ghost">← 戻る</button>
+          <button id="btn-solve" class="btn btn-success">解く →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ステップ4: 解答表示 -->
+    <section id="step-4" class="step-section hidden">
+      <div class="card">
+        <h2>解答</h2>
+        <div id="solve-result"></div>
+        <div id="sudoku-solution-grid" class="sudoku-grid"></div>
+        <div class="btn-row">
+          <button id="btn-back-4" class="btn btn-ghost">← 戻る</button>
+          <button id="btn-restart" class="btn btn-primary">最初からやり直す</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ローディングオーバーレイ -->
+    <div id="loading-overlay" class="hidden">
+      <div class="spinner"></div>
+      <p id="loading-msg">処理中...</p>
+    </div>
+  </div>
+
+  <!-- OpenCV.js (CDN) -->
+  <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady()" onerror="onOpenCvError()"></script>
+  <!-- TensorFlow.js (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+
+  <script src="js/sudokuSolver.js"></script>
+  <script src="js/digitRecognizer.js"></script>
+  <script src="js/imageProcessor.js"></script>
+  <script src="js/camera.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

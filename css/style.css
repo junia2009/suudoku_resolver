@@ -1,0 +1,369 @@
+/* ===== リセット & ベース ===== */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --primary: #4f46e5;
+  --primary-dark: #3730a3;
+  --secondary: #0ea5e9;
+  --success: #10b981;
+  --danger: #ef4444;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --text: #1e293b;
+  --text-muted: #64748b;
+  --border: #e2e8f0;
+  --radius: 12px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.08);
+  --given-color: #1e293b;
+  --solved-color: #4f46e5;
+}
+
+html { font-size: 16px; }
+
+body {
+  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ===== レイアウト ===== */
+#app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 16px;
+  position: relative;
+  min-height: 100vh;
+}
+
+/* ===== ヘッダー ===== */
+header {
+  text-align: center;
+  padding: 24px 0 16px;
+}
+
+header h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--primary);
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-size: 0.9rem;
+}
+
+/* ===== ステップインジケーター ===== */
+#step-indicator {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0 20px;
+  position: relative;
+}
+
+#step-indicator::before {
+  content: '';
+  position: absolute;
+  top: 26px;
+  left: 10%;
+  right: 10%;
+  height: 2px;
+  background: var(--border);
+  z-index: 0;
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  gap: 6px;
+  z-index: 1;
+  transition: color 0.3s;
+}
+
+.step span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--border);
+  font-weight: 700;
+  font-size: 0.85rem;
+  transition: background 0.3s, color 0.3s;
+}
+
+.step.active {
+  color: var(--primary);
+}
+
+.step.active span {
+  background: var(--primary);
+  color: #fff;
+}
+
+.step.done span {
+  background: var(--success);
+  color: #fff;
+}
+
+/* ===== カード ===== */
+.card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 24px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.hint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+/* ===== ボタン ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s, opacity 0.2s;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.btn-primary   { background: var(--primary);   color: #fff; }
+.btn-primary:hover { background: var(--primary-dark); }
+
+.btn-secondary { background: var(--secondary); color: #fff; }
+.btn-secondary:hover { background: #0284c7; }
+
+.btn-success   { background: var(--success);   color: #fff; }
+.btn-success:hover { background: #059669; }
+
+.btn-ghost {
+  background: transparent;
+  border: 2px solid var(--border);
+  color: var(--text-muted);
+}
+.btn-ghost:hover { background: var(--bg); }
+
+.input-buttons {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+.input-buttons .btn { flex: 1; min-width: 160px; justify-content: center; }
+
+.btn-row {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+/* ===== Canvas / プレビュー ===== */
+#preview-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+canvas {
+  max-width: 100%;
+  border-radius: 8px;
+  border: 2px solid var(--border);
+  display: block;
+}
+
+.canvas-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.canvas-wrap {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.canvas-wrap label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* ===== 数独グリッド ===== */
+.sudoku-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 1px;
+  background: #334155;
+  border: 3px solid #334155;
+  border-radius: 6px;
+  overflow: hidden;
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto 16px;
+  aspect-ratio: 1;
+}
+
+.sudoku-cell {
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(12px, 3.5vw, 22px);
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+  user-select: none;
+  position: relative;
+  aspect-ratio: 1;
+}
+
+/* 3x3ブロック境界線 */
+.sudoku-cell:nth-child(3n) { border-right: 2px solid #334155; }
+.sudoku-cell:nth-child(n+19):nth-child(-n+27) { border-bottom: 2px solid #334155; }
+.sudoku-cell:nth-child(n+46):nth-child(-n+54) { border-bottom: 2px solid #334155; }
+
+.sudoku-cell.given { color: var(--given-color); background: #f1f5f9; }
+.sudoku-cell.solved { color: var(--solved-color); }
+.sudoku-cell.selected { background: #e0e7ff; }
+.sudoku-cell:hover:not(.given) { background: #ede9fe; }
+.sudoku-cell.empty { color: var(--text-muted); }
+
+/* 数独セル内の入力 (手動編集時のinput) */
+.sudoku-cell input {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: transparent;
+  text-align: center;
+  font-size: inherit;
+  font-weight: 700;
+  color: inherit;
+  outline: none;
+  cursor: pointer;
+}
+
+/* ===== 解答結果 ===== */
+#solve-result {
+  text-align: center;
+  padding: 10px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+#solve-result.success {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+#solve-result.error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* ===== エラーメッセージ ===== */
+.error-msg {
+  background: #fef9c3;
+  border: 1px solid #fbbf24;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 0.88rem;
+  color: #92400e;
+  margin-bottom: 12px;
+}
+
+#manual-hint {
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+/* ===== ローディング ===== */
+#loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(255,255,255,0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  z-index: 999;
+  backdrop-filter: blur(4px);
+}
+
+.spinner {
+  width: 52px;
+  height: 52px;
+  border: 5px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+#loading-msg {
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== セクション表示制御 ===== */
+.step-section { display: none; }
+.step-section.active { display: block; }
+
+/* ===== ユーティリティ ===== */
+.hidden { display: none !important; }
+
+/* ===== レスポンシブ (スマホ最適化) ===== */
+@media (max-width: 480px) {
+  .card { padding: 16px; }
+  .btn { font-size: 0.88rem; padding: 10px 14px; }
+  header h1 { font-size: 1.4rem; }
+  .canvas-row { flex-direction: column; }
+}
