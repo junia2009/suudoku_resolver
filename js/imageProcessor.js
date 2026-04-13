@@ -18,6 +18,14 @@ const ImageProcessor = (() => {
   const WARP_SIZE = 540; // 歪み補正後の正方形サイズ (px) — 9×60で高解像度
   const CELL_SIZE = WARP_SIZE / 9;
 
+  // アンシャープマスクカーネル: エッジを強調して数字のストロークを明確化
+  // 中心係数3、隣接4方向に-0.5 → 合計=1 (輝度保存) でエッジ強調効果
+  const UNSHARP_MASK_KERNEL = [
+    0, -0.5,  0,
+    -0.5, 3, -0.5,
+    0, -0.5,  0
+  ];
+
   let _cvReady = false;
   let _corners = null;       // 手動選択コーナー [{x,y} × 4]
   let _manualMode = false;
@@ -301,19 +309,29 @@ const ImageProcessor = (() => {
         const blurred = new cv.Mat();
         cv.GaussianBlur(cellGray, blurred, new cv.Size(3, 3), 0);
 
+        // アンシャープマスクでエッジを強調して数字のストロークを明確化
+        const sharpened = new cv.Mat();
+        const sharpenKernel = cv.matFromArray(3, 3, cv.CV_32F, UNSHARP_MASK_KERNEL);
+        cv.filter2D(blurred, sharpened, cv.CV_8U, sharpenKernel);
+        sharpenKernel.delete();
+        blurred.delete();
+
         // セル単位で適応的閾値処理
+        // C=4 (旧: 7) — 小さい値にして細いストロークが消えないようにする
         const cellThresh = new cv.Mat();
         let blockSize = Math.max(5, Math.round(Math.min(w, h) * 0.3));
         if (blockSize % 2 === 0) blockSize++;
         cv.adaptiveThreshold(
-          blurred, cellThresh, 255,
+          sharpened, cellThresh, 255,
           cv.ADAPTIVE_THRESH_GAUSSIAN_C,
           cv.THRESH_BINARY_INV,
-          blockSize, 7
+          blockSize, 4
         );
+        sharpened.delete();
 
         // グリッド線除去: 境界ピクセルをゼロ化
-        const borderW = Math.max(3, Math.floor(Math.min(w, h) * 0.08));
+        // 5% (旧: 8%) — 境界を削りすぎると数字の端が欠ける
+        const borderW = Math.max(2, Math.floor(Math.min(w, h) * 0.05));
         _clearCellBorder(cellThresh, borderW);
 
         // ノイズ除去: 小さな連結成分を除去
@@ -329,7 +347,6 @@ const ImageProcessor = (() => {
         cells[row][col] = tmpCtx.getImageData(0, 0, CS, CS);
 
         cellGray.delete();
-        blurred.delete();
         cellThresh.delete();
         resized.delete();
       }

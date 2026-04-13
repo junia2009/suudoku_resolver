@@ -26,7 +26,7 @@ const DigitRecognizer = (() => {
 
   // 信頼度閾値
   const OCR_HIGH_CONFIDENCE  = 70;   // OCR 高信頼 (0-100)
-  const OCR_LOW_CONFIDENCE   = 30;   // OCR 最低限の信頼度
+  const OCR_LOW_CONFIDENCE   = 20;   // OCR 最低限の信頼度 (旧: 30)
   const CNN_HIGH_CONFIDENCE  = 0.7;  // CNN 高信頼 (0-1)
   const CNN_LOW_CONFIDENCE   = 0.1;  // CNN 最低限の信頼度
 
@@ -226,7 +226,7 @@ const DigitRecognizer = (() => {
       }
       const bbW = maxX - minX;
       const bbH = maxY - minY;
-      if (bbW < (w * 0.2) || bbH < (h * 0.2)) return true;
+      if (bbW < (w * 0.15) || bbH < (h * 0.15)) return true;
     }
 
     return false;
@@ -257,25 +257,33 @@ const DigitRecognizer = (() => {
     const enhanced3 = _enhanceForOCR(imageData, 3, 100);
     const result3 = await _predictWithOCR(enhanced3);
 
-    // 多数決 + 信頼度で最良を決定
-    const results = [result1, result2, result3].filter(r => r.digit !== 0);
+    // バリエーション4: 高解像度 5x 拡大 (細部をより鮮明に)
+    const enhanced4 = _enhanceForOCR(imageData, 5, 128);
+    const result4 = await _predictWithOCR(enhanced4);
+
+    // バリエーション5: PSM 8 (単語モード) — PSM 10 が失敗するケースへの対策
+    const enhanced5 = _enhanceForOCR(imageData, 4, 110);
+    const result5 = await _predictWithOCRPSM(enhanced5, '8');
+
+    // 多数決 + 信頼度加重スコアで最良結果を決定
+    const results = [result1, result2, result3, result4, result5].filter(r => r.digit !== 0);
     if (results.length === 0) return { digit: 0, confidence: 0 };
 
-    // 同じ数字が2つ以上 → そちらを採用
-    const votes = {};
+    // 各数字の信頼度の合計を計算して加重投票
+    const weightedVotes = {};
     for (const r of results) {
-      votes[r.digit] = (votes[r.digit] || 0) + 1;
+      weightedVotes[r.digit] = (weightedVotes[r.digit] || 0) + r.confidence;
     }
-    const maxVotes = Math.max(...Object.values(votes));
-    const majorityDigits = Object.entries(votes)
-      .filter(([_, v]) => v === maxVotes)
-      .map(([d]) => parseInt(d, 10));
+    const voteEntries = Object.entries(weightedVotes).sort((a, b) => b[1] - a[1]);
+    if (voteEntries.length === 0) return { digit: 0, confidence: 0 };
+    const winnerDigit = parseInt(voteEntries[0][0], 10);
 
+    // 勝者の数字の中で最高信頼度を持つ結果を返す
     const best = results
-      .filter(r => majorityDigits.includes(r.digit))
+      .filter(r => r.digit === winnerDigit)
       .sort((a, b) => b.confidence - a.confidence)[0];
 
-    return best || results.sort((a, b) => b.confidence - a.confidence)[0];
+    return best;
   }
 
   // ─────────────────────────────────────────────
@@ -377,6 +385,33 @@ const DigitRecognizer = (() => {
       console.warn('OCR 認識エラー:', err);
       return { digit: 0, confidence: 0 };
     }
+  }
+
+  // ─────────────────────────────────────────────
+  // 指定した PSM モードで OCR 認識を実行するヘルパー
+  // 認識後は PSM 10 (デフォルト) に戻す
+  // ─────────────────────────────────────────────
+  async function _predictWithOCRPSM(canvas, psmMode) {
+    if (!_ocrWorker || !_ocrReady) return { digit: 0, confidence: 0 };
+    let result = { digit: 0, confidence: 0 };
+    try {
+      await _ocrWorker.setParameters({
+        tessedit_char_whitelist: '123456789',
+        tessedit_pageseg_mode: psmMode,
+      });
+      result = await _predictWithOCR(canvas);
+    } catch (err) {
+      console.warn(`OCR PSM${psmMode} 認識エラー:`, err);
+    } finally {
+      // 常にデフォルト PSM に戻す
+      try {
+        await _ocrWorker.setParameters({
+          tessedit_char_whitelist: '123456789',
+          tessedit_pageseg_mode: '10',
+        });
+      } catch (_) { /* ignore */ }
+    }
+    return result;
   }
 
   // ─────────────────────────────────────────────
