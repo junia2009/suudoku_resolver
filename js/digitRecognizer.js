@@ -3,7 +3,7 @@
  * TensorFlow.js を使って各セルの ImageData から数字 (0-9) を認識する。
  *
  * 手法:
- *   - ピクセル輝度で空白判定（黒ピクセルが少ない → 空白 = 0）
+ *   - ピクセル輝度で空白判定（白ピクセルが少ない → 空白 = 0）
  *   - 非空白セルは MNIST 学習済みモデル (IndexedDB キャッシュ) で 1-9 を推論
  *   - モデルが利用できない場合は CNN 内蔵フォールバック（軽量 JS ヒューリスティック）
  *
@@ -20,7 +20,7 @@ const DigitRecognizer = (() => {
   // MNIST モデルの URL (TensorFlow Hub 互換形式)
   const MODEL_URL = 'https://storage.googleapis.com/tfjs-models/tfjs/mnist_transfer_cnn_v1/model.json';
 
-  // 空白判定閾値 (黒ピクセル率)
+  // 空白判定閾値 (白ピクセル率 — BINARY_INV後、数字部分が白)
   const EMPTY_THRESHOLD = 0.03;
 
   // ─────────────────────────────────────────────
@@ -90,30 +90,98 @@ const DigitRecognizer = (() => {
   }
 
   // ─────────────────────────────────────────────
-  // 空白判定: 閾値処理後の黒ピクセル率で判断
+  // 空白判定: BINARY_INV後の白ピクセル（数字部分）の割合で判断
+  // マージン領域を除いた内側のみをチェックする
   // ─────────────────────────────────────────────
   function _isEmpty(imageData) {
-    const data   = imageData.data;
-    const total  = data.length / 4;
-    let   dark   = 0;
+    const data = imageData.data;
+    const w = imageData.width;
+    const h = imageData.height;
+    // マージン領域（黒い余白）を除いた内側のみをチェック
+    const margin = Math.floor(Math.min(w, h) * 0.15);
+    let white = 0;
+    let innerTotal = 0;
 
-    for (let i = 0; i < data.length; i += 4) {
-      const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
-      if (brightness < 128) dark++;
+    for (let y = margin; y < h - margin; y++) {
+      for (let x = margin; x < w - margin; x++) {
+        const idx = (y * w + x) * 4;
+        const brightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+        if (brightness > 128) white++;
+        innerTotal++;
+      }
     }
 
-    return (dark / total) < EMPTY_THRESHOLD;
+    if (innerTotal === 0) return true;
+    return (white / innerTotal) < EMPTY_THRESHOLD;
+  }
+
+  // ─────────────────────────────────────────────
+  // セル画像の前処理: 数字を検出し28×28に中央配置
+  // MNIST形式（20×20の数字を28×28の中央に配置）に合わせる
+  // ─────────────────────────────────────────────
+  function _centerDigit(imageData) {
+    const { data, width, height } = imageData;
+
+    // 白ピクセル（数字部分）のバウンディングボックスを検出
+    let minX = width, maxX = 0, minY = height, maxY = 0;
+    let hasWhite = false;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        const brightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+        if (brightness > 128) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          hasWhite = true;
+        }
+      }
+    }
+
+    if (!hasWhite) return imageData;
+
+    const digitW = maxX - minX + 1;
+    const digitH = maxY - minY + 1;
+
+    // 元のImageDataをcanvasに描画
+    const srcCanvas = document.createElement('canvas');
+    srcCanvas.width = width;
+    srcCanvas.height = height;
+    srcCanvas.getContext('2d').putImageData(imageData, 0, 0);
+
+    // 28×28 出力canvas（MNIST規格: 数字を20×20領域に収め中央配置）
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = 28;
+    outCanvas.height = 28;
+    const ctx = outCanvas.getContext('2d');
+
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, 28, 28);
+
+    const scale = Math.min(20 / digitW, 20 / digitH);
+    const scaledW = Math.round(digitW * scale);
+    const scaledH = Math.round(digitH * scale);
+    const offsetX = Math.round((28 - scaledW) / 2);
+    const offsetY = Math.round((28 - scaledH) / 2);
+
+    ctx.drawImage(srcCanvas, minX, minY, digitW, digitH, offsetX, offsetY, scaledW, scaledH);
+
+    return ctx.getImageData(0, 0, 28, 28);
   }
 
   // ─────────────────────────────────────────────
   // TF.js モデルで推論
   // ─────────────────────────────────────────────
   async function _predictWithModel(imageData) {
+    // 数字を中央配置して28×28にリサイズ（MNIST形式に合わせる）
+    const centered = _centerDigit(imageData);
+
     const tensor = tf.tidy(() => {
-      // グレースケール化 & 28×28 リサイズ & 正規化
-      const imgTensor = tf.browser.fromPixels(imageData, 1); // [H, W, 1]
-      const resized   = tf.image.resizeBilinear(imgTensor, [28, 28]);
-      const normalized = resized.div(255.0);
+      // グレースケール化 & 正規化
+      const imgTensor = tf.browser.fromPixels(centered, 1); // [28, 28, 1]
+      const normalized = imgTensor.div(255.0);
       return normalized.expandDims(0); // [1, 28, 28, 1]
     });
 
@@ -122,14 +190,17 @@ const DigitRecognizer = (() => {
       const values     = await prediction.data();
       prediction.dispose();
 
-      // 最大確率のインデックス (0-9) を返す
-      let maxIdx = 0;
-      let maxVal = values[0];
-      for (let i = 1; i < values.length; i++) {
+      // 数独は1-9のみ使用するため、クラス0を除外して最大確率を探す
+      let maxIdx = 1;
+      let maxVal = values[1];
+      for (let i = 2; i <= 9; i++) {
         if (values[i] > maxVal) { maxVal = values[i]; maxIdx = i; }
       }
-      // 0 クラスは空白扱いなので 1-9 を返す
-      return maxIdx === 0 ? 1 : maxIdx;
+
+      // 信頼度が低すぎる場合は空白として扱う
+      if (maxVal < 0.1) return 0;
+
+      return maxIdx;
     } finally {
       tensor.dispose();
     }

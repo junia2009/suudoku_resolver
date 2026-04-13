@@ -130,6 +130,7 @@ const ImageProcessor = (() => {
 
   /**
    * 4点コーナーを [左上, 右上, 右下, 左下] の順に並べ替える
+   * sum(x+y) と diff(x-y) を使う標準的な手法
    */
   function _sortCorners(approxMat) {
     const pts = [];
@@ -137,15 +138,16 @@ const ImageProcessor = (() => {
       pts.push({ x: approxMat.data32S[i * 2], y: approxMat.data32S[i * 2 + 1] });
     }
 
+    const sums  = pts.map(p => p.x + p.y);
+    const diffs = pts.map(p => p.x - p.y);
+
     // sum が最小 → 左上, 最大 → 右下
-    // diff が最小 → 右上, 最大 → 左下
-    pts.sort((a, b) => (a.x + a.y) - (b.x + b.y));
-    const tl = pts[0];
-    const br = pts[3];
-    const rest = [pts[1], pts[2]];
-    rest.sort((a, b) => a.x - b.x);
-    const bl = rest[0];
-    const tr = rest[1];
+    // diff が最大 → 右上 (x大, y小), 最小 → 左下 (x小, y大)
+    const tl = pts[sums.indexOf(Math.min(...sums))];
+    const br = pts[sums.indexOf(Math.max(...sums))];
+    const tr = pts[diffs.indexOf(Math.max(...diffs))];
+    const bl = pts[diffs.indexOf(Math.min(...diffs))];
+
     return [tl, tr, br, bl];
   }
 
@@ -234,8 +236,8 @@ const ImageProcessor = (() => {
         const x = col * CELL_SIZE;
         const y = row * CELL_SIZE;
 
-        // ROI (margin: 10%)
-        const margin = Math.floor(CS * 0.1);
+        // ROI (margin: 15% — グリッド線を確実に除去)
+        const margin = Math.floor(CS * 0.15);
         const roi = thresh.roi(new cv.Rect(
           Math.round(x) + margin,
           Math.round(y) + margin,
