@@ -23,6 +23,9 @@ const DigitRecognizer = (() => {
   // 空白判定閾値 (白ピクセル率 — BINARY_INV後、数字部分が白)
   const EMPTY_THRESHOLD = 0.03;
 
+  // モデル推論の最低信頼度 (これ未満は空白扱い)
+  const MIN_CONFIDENCE = 0.1;
+
   // ─────────────────────────────────────────────
   // モデルのロード (非同期)
   // ─────────────────────────────────────────────
@@ -192,13 +195,14 @@ const DigitRecognizer = (() => {
 
       // 数独は1-9のみ使用するため、クラス0を除外して最大確率を探す
       let maxIdx = 1;
-      let maxVal = values[1];
-      for (let i = 2; i <= 9; i++) {
+      let maxVal = values.length > 1 ? values[1] : 0;
+      const upperBound = Math.min(values.length - 1, 9);
+      for (let i = 2; i <= upperBound; i++) {
         if (values[i] > maxVal) { maxVal = values[i]; maxIdx = i; }
       }
 
       // 信頼度が低すぎる場合は空白として扱う
-      if (maxVal < 0.1) return 0;
+      if (maxVal < MIN_CONFIDENCE) return 0;
 
       return maxIdx;
     } finally {
