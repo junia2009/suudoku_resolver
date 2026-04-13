@@ -53,6 +53,12 @@ header h1 {
   letter-spacing: -0.02em;
 }
 
+.version {
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-size: 0.75rem;
+}
+
 .subtitle {
   color: var(--text-muted);
   margin-top: 4px;
