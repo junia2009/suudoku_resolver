@@ -108,7 +108,8 @@ const DigitRecognizer = (() => {
         const binaryData = cells[row][col];
         const grayData = cellsGray ? cellsGray[row][col] : null;
 
-        if (_isEmpty(binaryData)) {
+        // 空白判定: グレースケール標準偏差 + 二値化ピクセル率の二重チェック
+        if (_isEmptyCell(binaryData, grayData)) {
           grid[row][col] = 0;
           confidenceMap[row][col] = { digit: 0, conf: 1.0, source: 'empty' };
           continue;
@@ -193,12 +194,47 @@ const DigitRecognizer = (() => {
   }
 
   // ─────────────────────────────────────────────
-  // 空白判定: 白ピクセル率 + バウンディングボックスチェック
+  // 空白判定: グレースケール標準偏差 + 二値化ピクセル率の二重チェック
+  // グレースケールの標準偏差が低い = コントラストが低い = 数字なし
   // ─────────────────────────────────────────────
-  function _isEmpty(imageData) {
-    const data = imageData.data;
-    const w = imageData.width;
-    const h = imageData.height;
+  function _isEmptyCell(binaryData, grayData) {
+    // 方法1: グレースケール標準偏差 (最も信頼性が高い)
+    if (grayData) {
+      const gd = grayData.data;
+      const gw = grayData.width;
+      const gh = grayData.height;
+      const gMargin = Math.floor(Math.min(gw, gh) * 0.12);
+      let sum = 0;
+      let sumSq = 0;
+      let cnt = 0;
+
+      for (let y = gMargin; y < gh - gMargin; y++) {
+        for (let x = gMargin; x < gw - gMargin; x++) {
+          const idx = (y * gw + x) * 4;
+          const v = gd[idx]; // グレースケールなのでR=G=B
+          sum += v;
+          sumSq += v * v;
+          cnt++;
+        }
+      }
+
+      if (cnt > 0) {
+        const mean = sum / cnt;
+        const variance = sumSq / cnt - mean * mean;
+        const stddev = Math.sqrt(Math.max(0, variance));
+
+        // 標準偏差が低い = コントラストが低い = 数字がない
+        // 印刷された数字は通常 stddev > 25
+        if (stddev < 15) {
+          return true;
+        }
+      }
+    }
+
+    // 方法2: 二値化画像の白ピクセル率 (フォールバック)
+    const data = binaryData.data;
+    const w = binaryData.width;
+    const h = binaryData.height;
     const margin = Math.floor(Math.min(w, h) * 0.15);
     let white = 0;
     let innerTotal = 0;
@@ -217,7 +253,7 @@ const DigitRecognizer = (() => {
 
     if (whiteRatio < EMPTY_THRESHOLD) return true;
 
-    // 白ピクセルが少量でも小さな点の場合はノイズ → 空白判定
+    // 白ピクセルが少量でバウンディングボックスが小さい → ノイズ
     if (whiteRatio < 0.15) {
       let minX = w, maxX = 0, minY = h, maxY = 0;
       for (let y = margin; y < h - margin; y++) {
@@ -234,8 +270,6 @@ const DigitRecognizer = (() => {
       }
       const bbW = maxX - minX;
       const bbH = maxY - minY;
-      // 幅と高さの両方が十分に小さい場合のみノイズとみなす
-      // (6は幅が狭く、1は高さに対して幅が狭い)
       if (bbW < (w * 0.1) || bbH < (h * 0.1)) return true;
       if (bbW < (w * 0.15) && bbH < (h * 0.2)) return true;
     }
@@ -253,7 +287,7 @@ const DigitRecognizer = (() => {
 
     const results = [];
 
-    // バリエーション1: グレースケールからOCR (最も精度が高い)
+    // バリエーション1: グレースケール 4x拡大 + コントラスト強調
     if (grayData) {
       const grayEnhanced = _enhanceGrayForOCR(grayData, 4);
       const r1 = await _predictWithOCR(grayEnhanced);
@@ -264,13 +298,17 @@ const DigitRecognizer = (() => {
         return r1;
       }
 
-      // バリエーション2: グレースケール高倍率
-      const grayEnhanced2 = _enhanceGrayForOCR(grayData, 5);
+      // バリエーション2: グレースケール 6x拡大 (より大きな画像)
+      const grayEnhanced2 = _enhanceGrayForOCR(grayData, 6);
       const r2 = await _predictWithOCR(grayEnhanced2);
       results.push(r2);
+
+      if (r2.digit !== 0 && r2.confidence >= OCR_HIGH_CONFIDENCE) {
+        return r2;
+      }
     }
 
-    // バリエーション3: 二値化画像からOCR (フォールバック)
+    // バリエーション3: 二値化画像 3x (フォールバック)
     const enhanced3 = _enhanceForOCR(binaryData, 3, 128);
     const r3 = await _predictWithOCR(enhanced3);
     results.push(r3);
@@ -303,21 +341,43 @@ const DigitRecognizer = (() => {
 
   // ─────────────────────────────────────────────
   // グレースケール画像用 OCR 前処理:
-  // Tesseract が自前で二値化するので、グレースケールのまま拡大 + パディング
+  // セルレベルのコントラスト正規化 + 拡大 + パディング
   // ─────────────────────────────────────────────
   function _enhanceGrayForOCR(grayImageData, scale = 4) {
-    const { width, height } = grayImageData;
-    const pad = Math.round(width * scale * 0.15);
+    const { width, height, data } = grayImageData;
+    const pad = Math.round(width * scale * 0.2);
     const outW = width * scale + pad * 2;
     const outH = height * scale + pad * 2;
 
-    // グレースケルを canvas に描画
-    const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = width;
-    tmpCanvas.height = height;
-    tmpCanvas.getContext('2d').putImageData(grayImageData, 0, 0);
+    // 1) セルレベルのコントラスト正規化 (min-max stretch)
+    const margin = Math.floor(Math.min(width, height) * 0.1);
+    let minVal = 255, maxVal = 0;
+    for (let y = margin; y < height - margin; y++) {
+      for (let x = margin; x < width - margin; x++) {
+        const v = data[(y * width + x) * 4];
+        if (v < minVal) minVal = v;
+        if (v > maxVal) maxVal = v;
+      }
+    }
 
-    // 白パディング付きで拡大
+    const normalizedCanvas = document.createElement('canvas');
+    normalizedCanvas.width = width;
+    normalizedCanvas.height = height;
+    const normCtx = normalizedCanvas.getContext('2d');
+    const normData = new ImageData(width, height);
+    const range = Math.max(1, maxVal - minVal);
+
+    for (let i = 0; i < data.length; i += 4) {
+      const v = data[i];
+      const stretched = Math.round(((v - minVal) / range) * 255);
+      normData.data[i]     = stretched;
+      normData.data[i + 1] = stretched;
+      normData.data[i + 2] = stretched;
+      normData.data[i + 3] = 255;
+    }
+    normCtx.putImageData(normData, 0, 0);
+
+    // 2) 白パディング付きで拡大
     const canvas = document.createElement('canvas');
     canvas.width = outW;
     canvas.height = outH;
@@ -326,7 +386,7 @@ const DigitRecognizer = (() => {
     ctx.fillRect(0, 0, outW, outH);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(tmpCanvas, 0, 0, width, height, pad, pad, width * scale, height * scale);
+    ctx.drawImage(normalizedCanvas, 0, 0, width, height, pad, pad, width * scale, height * scale);
 
     return canvas;
   }
