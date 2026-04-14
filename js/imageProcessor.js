@@ -287,6 +287,13 @@ const ImageProcessor = (() => {
           h = CS;
         }
 
+        // セル内マージン: グリッド線を除外するインセット
+        const inset = Math.max(2, Math.round(Math.min(w, h) * 0.05));
+        x += inset;
+        y += inset;
+        w -= inset * 2;
+        h -= inset * 2;
+
         // 範囲チェック
         x = Math.max(0, Math.min(x, grayEq.cols - 1));
         y = Math.max(0, Math.min(y, grayEq.rows - 1));
@@ -309,11 +316,11 @@ const ImageProcessor = (() => {
           blurred, cellThresh, 255,
           cv.ADAPTIVE_THRESH_GAUSSIAN_C,
           cv.THRESH_BINARY_INV,
-          blockSize, 7
+          blockSize, 5
         );
 
         // グリッド線除去: 境界ピクセルをゼロ化
-        const borderW = Math.max(3, Math.floor(Math.min(w, h) * 0.08));
+        const borderW = Math.max(2, Math.floor(Math.min(w, h) * 0.04));
         _clearCellBorder(cellThresh, borderW);
 
         // ノイズ除去: 小さな連結成分を除去
@@ -454,8 +461,8 @@ const ImageProcessor = (() => {
     cv.findContours(src, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
     src.delete();
 
-    // セル面積の1%未満の成分はノイズとみなす（数字は通常セル面積の5%以上を占める）
-    const minArea = cellSize * cellSize * 0.01;
+    // セル面積の2%未満の成分はノイズとみなす（数字は通常セル面積の5%以上を占める）
+    const minArea = cellSize * cellSize * 0.02;
     const result = cv.Mat.zeros(mat.rows, mat.cols, cv.CV_8UC1);
 
     for (let i = 0; i < contours.size(); i++) {

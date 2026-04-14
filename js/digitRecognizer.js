@@ -22,7 +22,7 @@ const DigitRecognizer = (() => {
   const MODEL_URL = 'https://storage.googleapis.com/tfjs-models/tfjs/mnist_transfer_cnn_v1/model.json';
 
   // 空白判定閾値 (白ピクセル率 — BINARY_INV後、数字部分が白)
-  const EMPTY_THRESHOLD = 0.03;
+  const EMPTY_THRESHOLD = 0.05;
 
   // 信頼度閾値
   const OCR_HIGH_CONFIDENCE  = 70;   // OCR 高信頼 (0-100)
@@ -210,7 +210,7 @@ const DigitRecognizer = (() => {
     if (whiteRatio < EMPTY_THRESHOLD) return true;
 
     // 白ピクセルが少量でも小さな点の場合はノイズ → 空白判定
-    if (whiteRatio < 0.08) {
+    if (whiteRatio < 0.12) {
       let minX = w, maxX = 0, minY = h, maxY = 0;
       for (let y = margin; y < h - margin; y++) {
         for (let x = margin; x < w - margin; x++) {
@@ -226,7 +226,7 @@ const DigitRecognizer = (() => {
       }
       const bbW = maxX - minX;
       const bbH = maxY - minY;
-      if (bbW < (w * 0.2) || bbH < (h * 0.2)) return true;
+      if (bbW < (w * 0.15) && bbH < (h * 0.15)) return true;
     }
 
     return false;
@@ -249,12 +249,12 @@ const DigitRecognizer = (() => {
       return result1;
     }
 
-    // バリエーション2: 高倍率 (4x拡大 + パディング追加)
+    // バリエーション2: 高倍率 (4x拡大)
     const enhanced2 = _enhanceForOCR(imageData, 4, 128);
     const result2 = await _predictWithOCR(enhanced2);
 
-    // バリエーション3: 閾値変更 (明るめの閾値)
-    const enhanced3 = _enhanceForOCR(imageData, 3, 100);
+    // バリエーション3: 太めの文字 (閾値を上げてエッジを含む)
+    const enhanced3 = _enhanceForOCR(imageData, 3, 160);
     const result3 = await _predictWithOCR(enhanced3);
 
     // 多数決 + 信頼度で最良を決定
@@ -279,78 +279,54 @@ const DigitRecognizer = (() => {
   }
 
   // ─────────────────────────────────────────────
-  // OCR 用前処理: 白背景・黒文字に変換 + パディング + 膨張
+  // OCR 用前処理: 白背景・黒文字に変換 + パディング
+  // セル画像(白文字/黒背景)を安全に反転し、再二値化する
   // @param scale 拡大倍率
-  // @param threshold 二値化閾値
+  // @param threshold 再二値化閾値（高いほど文字が太くなる）
   // ─────────────────────────────────────────────
   function _enhanceForOCR(imageData, scale = 3, threshold = 128) {
-    const { width, height } = imageData;
+    const { width, height, data } = imageData;
     const pad = Math.round(width * scale * 0.15);
     const outW = width * scale + pad * 2;
     const outH = height * scale + pad * 2;
 
+    // 1) セル画像を反転: 白文字/黒背景 → 黒文字/白背景
+    const invCanvas = document.createElement('canvas');
+    invCanvas.width = width;
+    invCanvas.height = height;
+    const invCtx = invCanvas.getContext('2d');
+    const invData = new ImageData(width, height);
+    for (let i = 0; i < data.length; i += 4) {
+      invData.data[i]     = 255 - data[i];
+      invData.data[i + 1] = 255 - data[i + 1];
+      invData.data[i + 2] = 255 - data[i + 2];
+      invData.data[i + 3] = 255;
+    }
+    invCtx.putImageData(invData, 0, 0);
+
+    // 2) 白パディング付きで拡大
     const canvas = document.createElement('canvas');
     canvas.width = outW;
     canvas.height = outH;
     const ctx = canvas.getContext('2d');
-
-    // 白背景
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, outW, outH);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(invCanvas, 0, 0, width, height, pad, pad, width * scale, height * scale);
 
-    const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = width;
-    tmpCanvas.height = height;
-    tmpCanvas.getContext('2d').putImageData(imageData, 0, 0);
-
-    ctx.drawImage(tmpCanvas, pad, pad, width * scale, height * scale);
-
-    // 二値化 & 反転（BINARY_INV→白文字 を 黒文字に）
+    // 3) 再二値化（スケーリングのアンチエイリアスを除去）
     const enlarged = ctx.getImageData(0, 0, outW, outH);
     const d = enlarged.data;
     for (let i = 0; i < d.length; i += 4) {
       const brightness = (d[i] + d[i + 1] + d[i + 2]) / 3;
-      const val = brightness > threshold ? 0 : 255;
+      const val = brightness < threshold ? 0 : 255;
       d[i] = val;
       d[i + 1] = val;
       d[i + 2] = val;
-      d[i + 3] = 255;
     }
-
-    // モルフォロジー的膨張で細いストロークを太くする
-    _dilateInPlace(d, outW, outH, 1);
-
     ctx.putImageData(enlarged, 0, 0);
 
     return canvas;
-  }
-
-  /**
-   * ピクセルデータ上で簡易膨張処理 (黒=文字を1ピクセル太くする)
-   */
-  function _dilateInPlace(data, w, h, radius) {
-    const copy = new Uint8Array(data.length);
-    copy.set(data);
-
-    for (let y = radius; y < h - radius; y++) {
-      for (let x = radius; x < w - radius; x++) {
-        const idx = (y * w + x) * 4;
-        if (copy[idx] === 0) continue; // 白ピクセルはスキップ
-
-        let hasBlack = false;
-        for (let dy = -radius; dy <= radius && !hasBlack; dy++) {
-          for (let dx = -radius; dx <= radius && !hasBlack; dx++) {
-            const ni = ((y + dy) * w + (x + dx)) * 4;
-            if (copy[ni] === 0) hasBlack = true;
-          }
-        }
-        if (hasBlack) {
-          data[idx] = 0;
-          data[idx + 1] = 0;
-          data[idx + 2] = 0;
-        }
-      }
-    }
   }
 
   // ─────────────────────────────────────────────
