@@ -92,9 +92,10 @@ const DigitRecognizer = (() => {
 
   // ─────────────────────────────────────────────
   // 9×9 セル ImageData[][] → 数字配列 number[][]
+  // cells: 二値化セル (CNN用), cellsGray: グレースケールセル (OCR用)
   // クロス検証 + 数独制約チェック付き
   // ─────────────────────────────────────────────
-  async function recognize(cells) {
+  async function recognize(cells, cellsGray) {
     const grid = Array.from({ length: 9 }, () => new Array(9).fill(0));
     const confidenceMap = Array.from({ length: 9 }, () =>
       new Array(9).fill(null)
@@ -104,15 +105,17 @@ const DigitRecognizer = (() => {
 
     for (let row = 0; row < 9; row++) {
       for (let col = 0; col < 9; col++) {
-        const imageData = cells[row][col];
-        if (_isEmpty(imageData)) {
+        const binaryData = cells[row][col];
+        const grayData = cellsGray ? cellsGray[row][col] : null;
+
+        if (_isEmpty(binaryData)) {
           grid[row][col] = 0;
           confidenceMap[row][col] = { digit: 0, conf: 1.0, source: 'empty' };
           continue;
         }
 
         // 両エンジンで認識してクロス検証
-        const result = await _crossValidate(imageData);
+        const result = await _crossValidate(binaryData, grayData);
         grid[row][col] = result.digit;
         confidenceMap[row][col] = result;
       }
@@ -127,12 +130,12 @@ const DigitRecognizer = (() => {
   // ─────────────────────────────────────────────
   // クロス検証: OCR と CNN の両方で認識して最適な結果を返す
   // ─────────────────────────────────────────────
-  async function _crossValidate(imageData) {
-    // OCR 認識（複数バリエーション試行）
-    const ocrResult = await _predictWithOCRMulti(imageData);
-    // CNN 認識
+  async function _crossValidate(binaryData, grayData) {
+    // OCR 認識（グレースケール優先、なければ二値化から変換）
+    const ocrResult = await _predictWithOCRMulti(binaryData, grayData);
+    // CNN 認識（二値化画像を使用）
     const cnnResult = _model
-      ? await _predictWithModel(imageData)
+      ? await _predictWithModel(binaryData)
       : { digit: 0, confidence: 0 };
 
     // ケース1: 両方一致 → 高信頼
@@ -233,37 +236,49 @@ const DigitRecognizer = (() => {
   }
 
   // ─────────────────────────────────────────────
-  // 複数バリエーション OCR: 異なる前処理で試行して最良結果を返す
+  // 複数バリエーション OCR: グレースケール + 二値化の両方で試行
   // ─────────────────────────────────────────────
-  async function _predictWithOCRMulti(imageData) {
+  async function _predictWithOCRMulti(binaryData, grayData) {
     if (!_ocrWorker || !_ocrReady) {
       return { digit: 0, confidence: 0 };
     }
 
-    // バリエーション1: 標準 (3x拡大 + 二値反転)
-    const enhanced1 = _enhanceForOCR(imageData, 3, 128);
-    const result1 = await _predictWithOCR(enhanced1);
+    const results = [];
 
-    // 高信頼ならそのまま返す
-    if (result1.digit !== 0 && result1.confidence >= OCR_HIGH_CONFIDENCE) {
-      return result1;
+    // バリエーション1: グレースケールからOCR (最も精度が高い)
+    if (grayData) {
+      const grayEnhanced = _enhanceGrayForOCR(grayData, 4);
+      const r1 = await _predictWithOCR(grayEnhanced);
+      results.push(r1);
+
+      // 高信頼ならそのまま返す
+      if (r1.digit !== 0 && r1.confidence >= OCR_HIGH_CONFIDENCE) {
+        return r1;
+      }
+
+      // バリエーション2: グレースケール高倍率
+      const grayEnhanced2 = _enhanceGrayForOCR(grayData, 5);
+      const r2 = await _predictWithOCR(grayEnhanced2);
+      results.push(r2);
     }
 
-    // バリエーション2: 高倍率 (4x拡大)
-    const enhanced2 = _enhanceForOCR(imageData, 4, 128);
-    const result2 = await _predictWithOCR(enhanced2);
+    // バリエーション3: 二値化画像からOCR (フォールバック)
+    const enhanced3 = _enhanceForOCR(binaryData, 3, 128);
+    const r3 = await _predictWithOCR(enhanced3);
+    results.push(r3);
 
-    // バリエーション3: 太めの文字 (閾値を上げてエッジを含む)
-    const enhanced3 = _enhanceForOCR(imageData, 3, 160);
-    const result3 = await _predictWithOCR(enhanced3);
+    // バリエーション4: 二値化画像、高倍率
+    const enhanced4 = _enhanceForOCR(binaryData, 4, 128);
+    const r4 = await _predictWithOCR(enhanced4);
+    results.push(r4);
 
     // 多数決 + 信頼度で最良を決定
-    const results = [result1, result2, result3].filter(r => r.digit !== 0);
-    if (results.length === 0) return { digit: 0, confidence: 0 };
+    const valid = results.filter(r => r.digit !== 0);
+    if (valid.length === 0) return { digit: 0, confidence: 0 };
 
-    // 同じ数字が2つ以上 → そちらを採用
+    // 同じ数字をカウント
     const votes = {};
-    for (const r of results) {
+    for (const r of valid) {
       votes[r.digit] = (votes[r.digit] || 0) + 1;
     }
     const maxVotes = Math.max(...Object.values(votes));
@@ -271,18 +286,45 @@ const DigitRecognizer = (() => {
       .filter(([_, v]) => v === maxVotes)
       .map(([d]) => parseInt(d, 10));
 
-    const best = results
+    const best = valid
       .filter(r => majorityDigits.includes(r.digit))
       .sort((a, b) => b.confidence - a.confidence)[0];
 
-    return best || results.sort((a, b) => b.confidence - a.confidence)[0];
+    return best || valid.sort((a, b) => b.confidence - a.confidence)[0];
   }
 
   // ─────────────────────────────────────────────
-  // OCR 用前処理: 白背景・黒文字に変換 + パディング
-  // セル画像(白文字/黒背景)を安全に反転し、再二値化する
-  // @param scale 拡大倍率
-  // @param threshold 再二値化閾値（高いほど文字が太くなる）
+  // グレースケール画像用 OCR 前処理:
+  // Tesseract が自前で二値化するので、グレースケールのまま拡大 + パディング
+  // ─────────────────────────────────────────────
+  function _enhanceGrayForOCR(grayImageData, scale = 4) {
+    const { width, height } = grayImageData;
+    const pad = Math.round(width * scale * 0.15);
+    const outW = width * scale + pad * 2;
+    const outH = height * scale + pad * 2;
+
+    // グレースケルを canvas に描画
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = width;
+    tmpCanvas.height = height;
+    tmpCanvas.getContext('2d').putImageData(grayImageData, 0, 0);
+
+    // 白パディング付きで拡大
+    const canvas = document.createElement('canvas');
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(tmpCanvas, 0, 0, width, height, pad, pad, width * scale, height * scale);
+
+    return canvas;
+  }
+
+  // ─────────────────────────────────────────────
+  // 二値化画像用 OCR 前処理: 白背景・黒文字に変換 + パディング
   // ─────────────────────────────────────────────
   function _enhanceForOCR(imageData, scale = 3, threshold = 128) {
     const { width, height, data } = imageData;

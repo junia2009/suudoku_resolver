@@ -9,7 +9,8 @@
 // ─────────────────────────────────────────────
 const AppState = {
   previewCanvas:  null,   // ステップ1で取得した canvas
-  cells:          null,   // 9×9 ImageData[][] (補正後のセル)
+  cells:          null,   // 9×9 ImageData[][] (補正後の二値化セル)
+  cellsGray:      null,   // 9×9 ImageData[][] (グレースケールセル, OCR用)
   warpedCanvas:   null,   // 補正後プレビュー canvas
   recognizedGrid: null,   // 認識結果 number[][]
   editedGrid:     null,   // ユーザー編集後 number[][]
@@ -66,6 +67,7 @@ function _bindStepButtons() {
       if (result) {
         // 自動検出成功
         AppState.cells        = result.cells;
+        AppState.cellsGray    = result.cellsGray;
         AppState.warpedCanvas = result.warped;
         // warped canvas を step-2 に表示
         _showWarpedCanvas(result.warped);
@@ -105,7 +107,7 @@ function _bindStepButtons() {
     await _nextFrame();
 
     try {
-      const grid = await DigitRecognizer.recognize(AppState.cells);
+      const grid = await DigitRecognizer.recognize(AppState.cells, AppState.cellsGray);
       AppState.recognizedGrid = grid;
       AppState.editedGrid     = grid.map(r => [...r]);
 
@@ -197,8 +199,9 @@ function _bindStepButtons() {
 // ─────────────────────────────────────────────
 function _bindManualCornersEvent() {
   document.addEventListener('manualCornersComplete', (e) => {
-    const { cells, warpedCanvas } = e.detail;
+    const { cells, cellsGray, warpedCanvas } = e.detail;
     AppState.cells        = cells;
+    AppState.cellsGray    = cellsGray;
     AppState.warpedCanvas = warpedCanvas;
     _showWarpedCanvas(warpedCanvas);
     document.getElementById('detection-error').classList.add('hidden');

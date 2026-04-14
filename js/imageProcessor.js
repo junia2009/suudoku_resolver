@@ -103,9 +103,14 @@ const ImageProcessor = (() => {
 
       const detected = _drawDetectedBox(srcCanvas, corners);
       const warped   = _warpPerspective(src, corners);
-      const cells    = _extractCells(warped);
+      const cellData = _extractCells(warped);
 
-      result = { detected, warped: _matToCanvas(warped, WARP_SIZE, WARP_SIZE), cells };
+      result = {
+        detected,
+        warped: _matToCanvas(warped, WARP_SIZE, WARP_SIZE),
+        cells: cellData.binary,
+        cellsGray: cellData.gray,
+      };
       warped.delete();
       return result;
     } catch (e) {
@@ -240,6 +245,7 @@ const ImageProcessor = (() => {
 
   // ─────────────────────────────────────────────
   // 9×9 セル ImageData[][] を抽出する
+  // 二値化セル (CNN用) とグレースケールセル (OCR用) の両方を返す
   // Hough線検出 → グリッド交点からセル境界を精密決定
   // フォールバック: 均等分割
   // ─────────────────────────────────────────────
@@ -264,13 +270,20 @@ const ImageProcessor = (() => {
 
     const CS = Math.floor(CELL_SIZE);
     const cells = [];
+    const cellsGray = [];
     const tmpCanvas = document.createElement('canvas');
     tmpCanvas.width  = CS;
     tmpCanvas.height = CS;
     const tmpCtx = tmpCanvas.getContext('2d');
 
+    const grayCanvas = document.createElement('canvas');
+    grayCanvas.width  = CS;
+    grayCanvas.height = CS;
+    const grayCtx = grayCanvas.getContext('2d');
+
     for (let row = 0; row < 9; row++) {
       cells[row] = [];
+      cellsGray[row] = [];
       for (let col = 0; col < 9; col++) {
         let x, y, w, h;
         if (gridLines) {
@@ -304,19 +317,29 @@ const ImageProcessor = (() => {
         // セルのグレースケール ROI を取得
         const cellGray = grayEq.roi(new cv.Rect(x, y, w, h));
 
+        // ──── グレースケールセル (OCR用): リサイズのみ ────
+        const grayResized = new cv.Mat();
+        cv.resize(cellGray, grayResized, new cv.Size(CS, CS));
+        const grayRoiCanvas = _matToCanvas(grayResized, CS, CS);
+        grayCtx.clearRect(0, 0, CS, CS);
+        grayCtx.drawImage(grayRoiCanvas, 0, 0);
+        cellsGray[row][col] = grayCtx.getImageData(0, 0, CS, CS);
+        grayResized.delete();
+
+        // ──── 二値化セル (CNN用): 適応的閾値 + ノイズ除去 ────
         // ガウシアンブラーで微小ノイズを軽減
         const blurred = new cv.Mat();
         cv.GaussianBlur(cellGray, blurred, new cv.Size(3, 3), 0);
 
         // セル単位で適応的閾値処理
         const cellThresh = new cv.Mat();
-        let blockSize = Math.max(5, Math.round(Math.min(w, h) * 0.3));
+        let blockSize = Math.max(5, Math.round(Math.min(w, h) * 0.25));
         if (blockSize % 2 === 0) blockSize++;
         cv.adaptiveThreshold(
           blurred, cellThresh, 255,
           cv.ADAPTIVE_THRESH_GAUSSIAN_C,
           cv.THRESH_BINARY_INV,
-          blockSize, 5
+          blockSize, 4
         );
 
         // グリッド線除去: 境界ピクセルをゼロ化
@@ -344,7 +367,7 @@ const ImageProcessor = (() => {
 
     gray.delete();
     grayEq.delete();
-    return cells;
+    return { binary: cells, gray: cellsGray };
   }
 
   // ─────────────────────────────────────────────
@@ -550,13 +573,13 @@ const ImageProcessor = (() => {
     try {
       srcMat = cv.imread(_srcCanvas);
       const warped = _warpPerspective(srcMat, _corners);
-      const cells  = _extractCells(warped);
+      const cellData = _extractCells(warped);
       const warpedCanvas = _matToCanvas(warped, WARP_SIZE, WARP_SIZE);
       warped.delete();
 
       // イベントを発火して UI に通知
       const event = new CustomEvent('manualCornersComplete', {
-        detail: { cells, warpedCanvas }
+        detail: { cells: cellData.binary, cellsGray: cellData.gray, warpedCanvas }
       });
       document.dispatchEvent(event);
     } finally {
