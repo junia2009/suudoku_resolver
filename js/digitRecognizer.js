@@ -25,10 +25,10 @@ const DigitRecognizer = (() => {
   const EMPTY_THRESHOLD = 0.05;
 
   // 信頼度閾値
-  const OCR_HIGH_CONFIDENCE  = 70;   // OCR 高信頼 (0-100)
-  const OCR_LOW_CONFIDENCE   = 30;   // OCR 最低限の信頼度
+  const OCR_HIGH_CONFIDENCE  = 75;   // OCR 高信頼 (0-100)
+  const OCR_LOW_CONFIDENCE   = 45;   // OCR 最低限の信頼度
   const CNN_HIGH_CONFIDENCE  = 0.7;  // CNN 高信頼 (0-1)
-  const CNN_LOW_CONFIDENCE   = 0.1;  // CNN 最低限の信頼度
+  const CNN_LOW_CONFIDENCE   = 0.3;  // CNN 最低限の信頼度
 
   // ─────────────────────────────────────────────
   // Tesseract.js OCR ワーカー初期化
@@ -165,17 +165,22 @@ const DigitRecognizer = (() => {
       };
     }
 
-    // ケース4: 両方低信頼 → 信頼度が高い方を採用
+    // ケース4: 両方低信頼で不一致 → 明確な差がある方のみ採用
     if (ocrResult.digit !== 0 && cnnResult.digit !== 0) {
       const ocrNorm = ocrResult.confidence / 100;
-      if (ocrNorm >= cnnResult.confidence) {
+      // 差が小さい場合は両方信頼できない → 認識不能
+      if (Math.abs(ocrNorm - cnnResult.confidence) < 0.2) {
+        console.log(`クロス検証: OCR=${ocrResult.digit}(${ocrNorm.toFixed(2)}) vs CNN=${cnnResult.digit}(${cnnResult.confidence.toFixed(2)}) - 差小で棄却`);
+        return { digit: 0, conf: 0, source: 'conflict' };
+      }
+      if (ocrNorm > cnnResult.confidence) {
         return { digit: ocrResult.digit, conf: ocrNorm, source: 'ocr-low' };
       } else {
         return { digit: cnnResult.digit, conf: cnnResult.confidence, source: 'cnn-low' };
       }
     }
 
-    // ケース5: 片方のみ結果あり
+    // ケース5: 片方のみ結果あり (信頼度要件を厳しく)
     if (ocrResult.digit !== 0 && ocrResult.confidence >= OCR_LOW_CONFIDENCE) {
       return { digit: ocrResult.digit, conf: ocrResult.confidence / 100, source: 'ocr-only' };
     }
@@ -213,7 +218,7 @@ const DigitRecognizer = (() => {
     if (whiteRatio < EMPTY_THRESHOLD) return true;
 
     // 白ピクセルが少量でも小さな点の場合はノイズ → 空白判定
-    if (whiteRatio < 0.12) {
+    if (whiteRatio < 0.15) {
       let minX = w, maxX = 0, minY = h, maxY = 0;
       for (let y = margin; y < h - margin; y++) {
         for (let x = margin; x < w - margin; x++) {
@@ -229,7 +234,10 @@ const DigitRecognizer = (() => {
       }
       const bbW = maxX - minX;
       const bbH = maxY - minY;
-      if (bbW < (w * 0.15) && bbH < (h * 0.15)) return true;
+      // 幅と高さの両方が十分に小さい場合のみノイズとみなす
+      // (6は幅が狭く、1は高さに対して幅が狭い)
+      if (bbW < (w * 0.1) || bbH < (h * 0.1)) return true;
+      if (bbW < (w * 0.15) && bbH < (h * 0.2)) return true;
     }
 
     return false;

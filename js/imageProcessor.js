@@ -484,8 +484,8 @@ const ImageProcessor = (() => {
     cv.findContours(src, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
     src.delete();
 
-    // セル面積の2%未満の成分はノイズとみなす（数字は通常セル面積の5%以上を占める）
-    const minArea = cellSize * cellSize * 0.02;
+    // セル面積の3%未満の成分はノイズとみなす（数字は通常セル面積の5%以上を占める）
+    const minArea = cellSize * cellSize * 0.03;
     const result = cv.Mat.zeros(mat.rows, mat.cols, cv.CV_8UC1);
 
     for (let i = 0; i < contours.size(); i++) {
