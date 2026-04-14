@@ -143,6 +143,7 @@ const Camera = (() => {
 
   function getOriginalImage() { return _originalImage; }
   function getPreviewCanvas() { return document.getElementById('canvas-preview'); }
+  function stopCamera() { _stopCamera(); }
 
-  return { init, getOriginalImage, getPreviewCanvas };
+  return { init, getOriginalImage, getPreviewCanvas, stopCamera };
 })();

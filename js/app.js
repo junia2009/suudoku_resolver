@@ -184,9 +184,10 @@ function _bindStepButtons() {
   // ── 最初からやり直す ──
   document.getElementById('btn-restart').addEventListener('click', () => {
     Object.keys(AppState).forEach(k => { AppState[k] = null; });
-    // 入力要素リセット
-    document.getElementById('input-camera').value  = '';
+    // カメラ停止 & 入力要素リセット
+    Camera.stopCamera();
     document.getElementById('input-gallery').value = '';
+    document.getElementById('camera-preview-container').classList.add('hidden');
     document.getElementById('preview-container').classList.add('hidden');
     document.getElementById('detection-error').classList.add('hidden');
     ImageProcessor.resetManual();
