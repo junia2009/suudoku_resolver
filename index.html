@@ -10,7 +10,7 @@
   <div id="app">
     <header>
       <h1>数独解読アプリ</h1>
-      <p class="version">ver1.4.0</p>
+      <p class="version">ver1.4.1</p>
       <p class="subtitle">写真を撮影 or 選択して数独を自動解読</p>
     </header>
 
@@ -44,10 +44,18 @@
           </button>
         </div>
         <!-- 隠し input -->
-        <input type="file" id="input-camera" accept="image/*" capture="environment" style="display:none" />
         <input type="file" id="input-gallery" accept="image/*" style="display:none" />
 
-        <!-- プレビュー -->
+        <!-- カメラプレビュー -->
+        <div id="camera-preview-container" class="hidden">
+          <video id="camera-video" autoplay playsinline muted></video>
+          <div class="camera-controls">
+            <button id="btn-capture" class="btn btn-success">撮影</button>
+            <button id="btn-camera-close" class="btn btn-secondary">閉じる</button>
+          </div>
+        </div>
+
+        <!-- 画像プレビュー -->
         <div id="preview-container" class="hidden">
           <canvas id="canvas-preview"></canvas>
           <button id="btn-next-1" class="btn btn-success">次へ → 補正処理</button>
