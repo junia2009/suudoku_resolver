@@ -107,7 +107,7 @@ function _bindStepButtons() {
     await _nextFrame();
 
     try {
-      const grid = await DigitRecognizer.recognize(AppState.cells, AppState.cellsGray);
+      const grid = await DigitRecognizer.recognize(AppState.cells, AppState.cellsGray, AppState.warpedCanvas);
       AppState.recognizedGrid = grid;
       AppState.editedGrid     = grid.map(r => [...r]);
 
