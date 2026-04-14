@@ -1,11 +1,11 @@
 ﻿/**
  * digitRecognizer.js
  *
- * v1.2.0: ハイブリッドアプローチ
- *   - OpenCVでグリッド線を形態学的に除去 → 全体OCR (PSM 11 sparse text)
- *   - 元画像でも全体OCR (PSM 6 single block) → バリエーション追加
- *   - セルのピクセル標準偏差で空セルを検出し誤検出をフィルタ
- *   - 5バリエーションの多数決マージ
+ * v1.3.0: セル単位OCR復帰 + 前処理強化
+ *   - セルごとにグレースケール画像をTesseract (PSM 10: 単一文字) で認識
+ *   - 各セルで複数前処理バリエーションを試し多数決
+ *   - 空セル検出 (stddev) で不要な認識をスキップ
+ *   - パディング追加で数字輪郭がフレームに接しないように
  *   - 数独制約チェックで重複除去
  */
 
@@ -19,16 +19,16 @@ const DigitRecognizer = (() => {
       _ocrWorker = await Tesseract.createWorker('eng', 1, {
         logger: (m) => {
           if (m.status === 'recognizing text') {
-            console.log('OCR progress: ' + Math.round(m.progress * 100) + '%');
+            // 静かにする
           }
         }
       });
       await _ocrWorker.setParameters({
         tessedit_char_whitelist: '123456789',
-        tessedit_pageseg_mode: '6',
+        tessedit_pageseg_mode: '10', // PSM_SINGLE_CHAR
       });
       _ocrReady = true;
-      console.log('Tesseract.js OCR worker ready');
+      console.log('Tesseract.js OCR worker ready (PSM 10)');
       return _ocrWorker;
     } catch (err) {
       console.warn('Tesseract.js init failed:', err);
@@ -43,340 +43,279 @@ const DigitRecognizer = (() => {
   // ── メイン認識 ──
   async function recognize(cells, cellsGray, warpedCanvas) {
     await loadModel();
-    if (!_ocrWorker || !_ocrReady || !warpedCanvas) {
-      console.error('OCR worker or warped canvas not available');
+    if (!_ocrWorker || !_ocrReady) {
+      console.error('OCR worker not available');
       return Array.from({ length: 9 }, () => new Array(9).fill(0));
     }
 
-    const gridW = warpedCanvas.width;
-    const gridH = warpedCanvas.height;
-    const cellW = gridW / 9;
-    const cellH = gridH / 9;
-    console.log('Grid: ' + gridW + 'x' + gridH + ', cell: ' + cellW.toFixed(1) + 'x' + cellH.toFixed(1));
+    const source = cellsGray || cells;
+    if (!source) {
+      console.error('No cell data');
+      return Array.from({ length: 9 }, () => new Array(9).fill(0));
+    }
 
-    // 空セル検出 (グレースケールセルの標準偏差)
-    const emptyCells = _detectEmptyCells(cellsGray || cells);
-    console.log('Non-empty cells: ' + emptyCells.flat().filter(v => !v).length);
+    const grid = Array.from({ length: 9 }, () => new Array(9).fill(0));
+    let recognized = 0;
+    let skipped = 0;
 
-    const allResults = [];
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) {
+        const cell = source[r][c];
+        if (!cell) { skipped++; continue; }
 
-    // ── グリッド線除去を試行 ──
-    let cleaned = null;
-    if (typeof cv !== 'undefined' && cv.Mat) {
-      try {
-        cleaned = _removeGridLines(warpedCanvas);
-        console.log('Grid lines removed');
-      } catch (e) {
-        console.warn('Grid line removal failed:', e);
+        // 空セル判定
+        if (_isEmpty(cell)) { skipped++; continue; }
+
+        // 複数バリエーションで認識
+        const digit = await _recognizeCell(cell);
+        if (digit > 0) {
+          grid[r][c] = digit;
+          recognized++;
+        }
       }
     }
 
-    // ── 線除去画像で OCR (PSM 11: sparse text) ──
-    if (cleaned) {
-      try {
-        await _ocrWorker.setParameters({ tessedit_pageseg_mode: '11' });
-      } catch (e) {
-        console.warn('PSM 11 not supported, using PSM 6');
-        await _ocrWorker.setParameters({ tessedit_pageseg_mode: '6' });
-      }
+    console.log('Recognized: ' + recognized + ', skipped: ' + skipped);
 
-      // V1: cleaned 2x
-      const c2 = _scaleCanvas(cleaned, 2);
-      const r1 = await _recognizeWholeGrid(c2, cellW, cellH, 2);
-      allResults.push(...r1);
-      console.log('V1 (cleaned sparse 2x): ' + r1.length);
-
-      // V2: cleaned 3x
-      const c3 = _scaleCanvas(cleaned, 3);
-      const r2 = await _recognizeWholeGrid(c3, cellW, cellH, 3);
-      allResults.push(...r2);
-      console.log('V2 (cleaned sparse 3x): ' + r2.length);
-
-      // V3: cleaned + contrast enhanced 2x
-      const ec = _enhanceContrast(cleaned);
-      const ec2 = _scaleCanvas(ec, 2);
-      const r3 = await _recognizeWholeGrid(ec2, cellW, cellH, 2);
-      allResults.push(...r3);
-      console.log('V3 (cleaned enhanced 2x): ' + r3.length);
-    }
-
-    // ── 元画像(線あり)で OCR (PSM 6: single block) ──
-    await _ocrWorker.setParameters({ tessedit_pageseg_mode: '6' });
-
-    // V4: original 2x
-    const s2 = _scaleCanvas(warpedCanvas, 2);
-    const r4 = await _recognizeWholeGrid(s2, cellW, cellH, 2);
-    allResults.push(...r4);
-    console.log('V4 (original block 2x): ' + r4.length);
-
-    // V5: original 3x
-    const s3 = _scaleCanvas(warpedCanvas, 3);
-    const r5 = await _recognizeWholeGrid(s3, cellW, cellH, 3);
-    allResults.push(...r5);
-    console.log('V5 (original block 3x): ' + r5.length);
-
-    // ── 空セルフィルタ ──
-    const filtered = allResults.filter(d => !emptyCells[d.row][d.col]);
-    console.log('After empty filter: ' + filtered.length + '/' + allResults.length);
-
-    // ── 多数決マージ ──
-    const grid = _mergeResults(filtered);
-
-    // ── 数独制約チェック ──
+    // 数独制約チェック
     _resolveConflicts(grid);
 
-    console.log('Final: ' + grid.flat().filter(v => v !== 0).length + ' digits');
+    const final = grid.flat().filter(v => v !== 0).length;
+    console.log('After conflict resolution: ' + final + ' digits');
     return grid;
   }
 
   // ────────────────────────────────────────
-  // 空セル検出: セル内ピクセルの標準偏差が低い = 空
+  // 空セル判定: 中央領域のピクセル標準偏差
   // ────────────────────────────────────────
-  function _detectEmptyCells(cellSource) {
-    const result = Array.from({ length: 9 }, () => new Array(9).fill(false));
-    if (!cellSource) return result;
+  function _isEmpty(cellImageData) {
+    const d = cellImageData.data;
+    const w = cellImageData.width;
+    const h = cellImageData.height;
+    const margin = Math.floor(Math.min(w, h) * 0.2);
 
-    for (let r = 0; r < 9; r++) {
-      for (let c = 0; c < 9; c++) {
-        const cell = cellSource[r][c];
-        if (!cell) { result[r][c] = true; continue; }
+    let sum = 0, sumSq = 0, count = 0;
+    for (let y = margin; y < h - margin; y++) {
+      for (let x = margin; x < w - margin; x++) {
+        const idx = (y * w + x) * 4;
+        const v = d[idx];
+        sum += v;
+        sumSq += v * v;
+        count++;
+      }
+    }
+    if (count === 0) return true;
+    const mean = sum / count;
+    const stddev = Math.sqrt(Math.max(0, sumSq / count - mean * mean));
 
-        const d = cell.data;
-        const w = cell.width;
-        const h = cell.height;
-        const margin = Math.floor(Math.min(w, h) * 0.15);
+    // 黒ピクセル率も考慮
+    let darkCount = 0;
+    const threshold = mean * 0.6;
+    for (let y = margin; y < h - margin; y++) {
+      for (let x = margin; x < w - margin; x++) {
+        const idx = (y * w + x) * 4;
+        if (d[idx] < threshold) darkCount++;
+      }
+    }
+    const darkRatio = darkCount / count;
 
-        let sum = 0, sumSq = 0, count = 0;
-        for (let y = margin; y < h - margin; y++) {
-          for (let x = margin; x < w - margin; x++) {
-            const idx = (y * w + x) * 4;
-            const v = d[idx];
-            sum += v;
-            sumSq += v * v;
-            count++;
+    // stddev低い = 均一 = 空, darkRatio低すぎ = 数字なし
+    return stddev < 15 || darkRatio < 0.02;
+  }
+
+  // ────────────────────────────────────────
+  // セル単位で複数前処理バリエーションを試して多数決
+  // ────────────────────────────────────────
+  async function _recognizeCell(cellImageData) {
+    const variants = _createVariants(cellImageData);
+    const votes = {};
+    const confs = {};
+
+    for (const canvas of variants) {
+      try {
+        const result = await _ocrWorker.recognize(canvas);
+        if (result.data && result.data.text) {
+          const text = result.data.text.trim();
+          // 単一文字で1-9のみ受け付ける
+          if (/^[1-9]$/.test(text)) {
+            const d = parseInt(text, 10);
+            const conf = result.data.confidence || 0;
+            votes[d] = (votes[d] || 0) + 1;
+            if (!confs[d] || conf > confs[d]) confs[d] = conf;
           }
         }
-
-        if (count === 0) { result[r][c] = true; continue; }
-        const mean = sum / count;
-        const stddev = Math.sqrt(Math.max(0, sumSq / count - mean * mean));
-        result[r][c] = stddev < 18;
-      }
-    }
-    return result;
-  }
-
-  // ────────────────────────────────────────
-  // OpenCV で グリッド線を形態学的に除去
-  // ────────────────────────────────────────
-  function _removeGridLines(canvas) {
-    const src = cv.imread(canvas);
-    const gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-    // 適応的二値化 (反転: 文字・線が白)
-    const binary = new cv.Mat();
-    cv.adaptiveThreshold(gray, binary, 255,
-      cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 15, 10);
-
-    const cols = gray.cols;
-    const rows = gray.rows;
-
-    // 水平線検出: 長い水平構造のみ残す
-    const hLen = Math.floor(cols / 12);
-    const hKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(hLen, 1));
-    const hLines = new cv.Mat();
-    cv.morphologyEx(binary, hLines, cv.MORPH_OPEN, hKernel);
-
-    // 垂直線検出: 長い垂直構造のみ残す
-    const vLen = Math.floor(rows / 12);
-    const vKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(1, vLen));
-    const vLines = new cv.Mat();
-    cv.morphologyEx(binary, vLines, cv.MORPH_OPEN, vKernel);
-
-    // 線を合成
-    const lines = new cv.Mat();
-    cv.add(hLines, vLines, lines);
-
-    // 線を少し膨張して確実に除去
-    const dKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-    const linesDil = new cv.Mat();
-    cv.dilate(lines, linesDil, dKernel);
-
-    // 二値画像から線を除去 → 文字だけ残る
-    const cleaned = new cv.Mat();
-    cv.subtract(binary, linesDil, cleaned);
-
-    // 小さなノイズ除去
-    const morphK = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
-    const denoised = new cv.Mat();
-    cv.morphologyEx(cleaned, denoised, cv.MORPH_OPEN, morphK);
-
-    // 反転: 黒文字 on 白背景 (Tesseract向き)
-    const result = new cv.Mat();
-    cv.bitwise_not(denoised, result);
-
-    const out = document.createElement('canvas');
-    out.width = canvas.width;
-    out.height = canvas.height;
-    cv.imshow(out, result);
-
-    // メモリ解放
-    [src, gray, binary, hLines, vLines, lines, hKernel, vKernel,
-     dKernel, linesDil, cleaned, morphK, denoised, result].forEach(m => m.delete());
-
-    return out;
-  }
-
-  // ────────────────────────────────────────
-  // グリッド全体画像を OCR
-  // ────────────────────────────────────────
-  async function _recognizeWholeGrid(canvas, cellW, cellH, scale) {
-    try {
-      const result = await _ocrWorker.recognize(canvas);
-      const detections = [];
-
-      // words → symbols ルートで文字座標を取得
-      if (result.data && result.data.words) {
-        for (const word of result.data.words) {
-          if (word.symbols && word.symbols.length > 0) {
-            for (const sym of word.symbols) {
-              _processSymbol(sym, cellW, cellH, scale, detections);
-            }
-          } else {
-            // symbols がない場合は word の text + bbox で推定
-            const text = word.text.trim();
-            for (let i = 0; i < text.length; i++) {
-              if (!/^[1-9]$/.test(text[i])) continue;
-              const bbox = word.bbox;
-              const charWidth = (bbox.x1 - bbox.x0) / Math.max(text.length, 1);
-              const cx = (bbox.x0 + charWidth * (i + 0.5)) / scale;
-              const cy = (bbox.y0 + bbox.y1) / 2 / scale;
-              const col = Math.floor(cx / cellW);
-              const row = Math.floor(cy / cellH);
-              if (row >= 0 && row < 9 && col >= 0 && col < 9) {
-                detections.push({
-                  digit: parseInt(text[i], 10), row, col,
-                  confidence: word.confidence || 0
-                });
-              }
-            }
-          }
-        }
-      }
-
-      return detections;
-    } catch (err) {
-      console.warn('Grid OCR error:', err);
-      return [];
-    }
-  }
-
-  function _processSymbol(sym, cellW, cellH, scale, detections) {
-    const ch = sym.text.trim();
-    if (!/^[1-9]$/.test(ch)) return;
-    const bbox = sym.bbox;
-    const cx = (bbox.x0 + bbox.x1) / 2 / scale;
-    const cy = (bbox.y0 + bbox.y1) / 2 / scale;
-    const col = Math.floor(cx / cellW);
-    const row = Math.floor(cy / cellH);
-    if (row >= 0 && row < 9 && col >= 0 && col < 9) {
-      detections.push({
-        digit: parseInt(ch, 10), row, col,
-        confidence: sym.confidence || 0
-      });
-    }
-  }
-
-  // ────────────────────────────────────────
-  // 多数決マージ
-  // ────────────────────────────────────────
-  function _mergeResults(allDetections) {
-    const grid = Array.from({ length: 9 }, () => new Array(9).fill(0));
-    const cellVotes = Array.from({ length: 9 }, () =>
-      Array.from({ length: 9 }, () => ({}))
-    );
-    const cellBestConf = Array.from({ length: 9 }, () =>
-      Array.from({ length: 9 }, () => ({}))
-    );
-
-    for (const det of allDetections) {
-      const { row, col, digit, confidence } = det;
-      cellVotes[row][col][digit] = (cellVotes[row][col][digit] || 0) + 1;
-      if (!cellBestConf[row][col][digit] || confidence > cellBestConf[row][col][digit]) {
-        cellBestConf[row][col][digit] = confidence;
+      } catch (e) {
+        // skip
       }
     }
 
-    for (let r = 0; r < 9; r++) {
-      for (let c = 0; c < 9; c++) {
-        const votes = cellVotes[r][c];
-        const digits = Object.keys(votes).map(Number);
-        if (digits.length === 0) continue;
+    const digits = Object.keys(votes).map(Number);
+    if (digits.length === 0) return 0;
 
-        digits.sort((a, b) => {
-          const d = votes[b] - votes[a];
-          if (d !== 0) return d;
-          return (cellBestConf[r][c][b] || 0) - (cellBestConf[r][c][a] || 0);
-        });
+    digits.sort((a, b) => {
+      const vd = votes[b] - votes[a];
+      if (vd !== 0) return vd;
+      return (confs[b] || 0) - (confs[a] || 0);
+    });
 
-        const best = digits[0];
-        const bestVotes = votes[best];
-        const conf = cellBestConf[r][c][best] || 0;
+    const best = digits[0];
+    const bestVotes = votes[best];
+    const bestConf = confs[best] || 0;
 
-        // 2票以上、または1票でも信頼度85以上なら確定
-        if (bestVotes >= 2 || conf >= 85) {
-          grid[r][c] = best;
-        }
-      }
+    // 最低でも2票、または1票でも信頼度80以上
+    if (bestVotes >= 2 || bestConf >= 80) {
+      return best;
     }
 
-    return grid;
+    return 0;
   }
 
   // ────────────────────────────────────────
-  // Canvas 拡大
+  // 前処理バリエーション: 各種変換したcanvasの配列
   // ────────────────────────────────────────
-  function _scaleCanvas(canvas, scale) {
-    const out = document.createElement('canvas');
-    out.width = canvas.width * scale;
-    out.height = canvas.height * scale;
-    const ctx = out.getContext('2d');
+  function _createVariants(cellImageData) {
+    const results = [];
+    const w = cellImageData.width;
+    const h = cellImageData.height;
+
+    // V1: グレースケールそのまま + パディング + 3倍拡大
+    results.push(_prepareCell(cellImageData, false, 3));
+
+    // V2: グレースケール + パディング + 4倍拡大
+    results.push(_prepareCell(cellImageData, false, 4));
+
+    // V3: コントラスト強調 + パディング + 3倍
+    results.push(_prepareCell(cellImageData, true, 3));
+
+    // V4: Otsu二値化 + パディング + 3倍
+    results.push(_prepareCellBinarized(cellImageData, 3));
+
+    // V5: コントラスト強調 + 4倍
+    results.push(_prepareCell(cellImageData, true, 4));
+
+    return results;
+  }
+
+  // ────────────────────────────────────────
+  // セル画像の前処理: パディング + 拡大
+  // ────────────────────────────────────────
+  function _prepareCell(cellImageData, enhanceContrast, scale) {
+    const w = cellImageData.width;
+    const h = cellImageData.height;
+
+    // パディング: 数字の周囲に白い余白を確保 (Tesseractは余白があると認識精度が上がる)
+    const pad = Math.floor(Math.min(w, h) * 0.3);
+    const pw = w + pad * 2;
+    const ph = h + pad * 2;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = pw * scale;
+    canvas.height = ph * scale;
+    const ctx = canvas.getContext('2d');
+
+    // 白背景
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 一時canvasにImageDataを描画
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    const tmpCtx = tmp.getContext('2d');
+
+    if (enhanceContrast) {
+      const imgData = new ImageData(new Uint8ClampedArray(cellImageData.data), w, h);
+      _enhanceImageData(imgData);
+      tmpCtx.putImageData(imgData, 0, 0);
+    } else {
+      tmpCtx.putImageData(cellImageData, 0, 0);
+    }
+
+    // 拡大描画 (パディング込み)
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(canvas, 0, 0, out.width, out.height);
-    return out;
+    ctx.drawImage(tmp, 0, 0, w, h, pad * scale, pad * scale, w * scale, h * scale);
+
+    return canvas;
   }
 
   // ────────────────────────────────────────
-  // コントラスト強調 (min-max stretch)
+  // Otsu二値化バリエーション
   // ────────────────────────────────────────
-  function _enhanceContrast(canvas) {
-    const out = document.createElement('canvas');
-    out.width = canvas.width;
-    out.height = canvas.height;
-    const ctx = out.getContext('2d');
-    ctx.drawImage(canvas, 0, 0);
-    const imgData = ctx.getImageData(0, 0, out.width, out.height);
+  function _prepareCellBinarized(cellImageData, scale) {
+    const w = cellImageData.width;
+    const h = cellImageData.height;
+    const d = cellImageData.data;
+
+    // Otsu閾値計算
+    const histogram = new Array(256).fill(0);
+    for (let i = 0; i < d.length; i += 4) {
+      histogram[d[i]]++;
+    }
+    const total = w * h;
+    let sumB = 0, wB = 0, max = 0, sum = 0, thresh = 128;
+    for (let i = 0; i < 256; i++) sum += i * histogram[i];
+    for (let i = 0; i < 256; i++) {
+      wB += histogram[i];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+      sumB += i * histogram[i];
+      const mB = sumB / wB;
+      const mF = (sum - sumB) / wF;
+      const between = wB * wF * (mB - mF) * (mB - mF);
+      if (between > max) { max = between; thresh = i; }
+    }
+
+    // 二値化 (黒文字 on 白背景)
+    const imgData = new ImageData(new Uint8ClampedArray(d.length), w, h);
+    for (let i = 0; i < d.length; i += 4) {
+      const v = d[i] < thresh ? 0 : 255;
+      imgData.data[i] = imgData.data[i + 1] = imgData.data[i + 2] = v;
+      imgData.data[i + 3] = 255;
+    }
+
+    // パディング + 拡大
+    const pad = Math.floor(Math.min(w, h) * 0.3);
+    const pw = w + pad * 2;
+    const ph = h + pad * 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = pw * scale;
+    canvas.height = ph * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    tmp.getContext('2d').putImageData(imgData, 0, 0);
+
+    ctx.imageSmoothingEnabled = false; // 二値化画像はスムージングしない
+    ctx.drawImage(tmp, 0, 0, w, h, pad * scale, pad * scale, w * scale, h * scale);
+
+    return canvas;
+  }
+
+  // ────────────────────────────────────────
+  // ImageData のコントラスト強調 (min-max stretch)
+  // ────────────────────────────────────────
+  function _enhanceImageData(imgData) {
     const d = imgData.data;
     let minV = 255, maxV = 0;
     for (let i = 0; i < d.length; i += 4) {
-      const v = (d[i] + d[i + 1] + d[i + 2]) / 3;
-      if (v < minV) minV = v;
-      if (v > maxV) maxV = v;
+      if (d[i] < minV) minV = d[i];
+      if (d[i] > maxV) maxV = d[i];
     }
     const range = Math.max(1, maxV - minV);
     for (let i = 0; i < d.length; i += 4) {
-      const v = (d[i] + d[i + 1] + d[i + 2]) / 3;
-      const s = Math.round(((v - minV) / range) * 255);
+      const s = Math.round(((d[i] - minV) / range) * 255);
       d[i] = d[i + 1] = d[i + 2] = s;
     }
-    ctx.putImageData(imgData, 0, 0);
-    return out;
   }
 
   // ────────────────────────────────────────
-  // 数独制約チェック: 行・列・ブロックの重複を除去
+  // 数独制約チェック
   // ────────────────────────────────────────
   function _resolveConflicts(grid) {
     let changed = true;
