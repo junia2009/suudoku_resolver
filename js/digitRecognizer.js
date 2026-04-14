@@ -48,8 +48,9 @@ const DigitRecognizer = (() => {
       return Array.from({ length: 9 }, () => new Array(9).fill(0));
     }
 
-    const source = cellsGray || cells;
-    if (!source) {
+    const gray = cellsGray || cells;
+    const binary = cells;
+    if (!gray) {
       console.error('No cell data');
       return Array.from({ length: 9 }, () => new Array(9).fill(0));
     }
@@ -60,14 +61,15 @@ const DigitRecognizer = (() => {
 
     for (let r = 0; r < 9; r++) {
       for (let c = 0; c < 9; c++) {
-        const cell = source[r][c];
-        if (!cell) { skipped++; continue; }
+        const cellGray = gray[r][c];
+        const cellBin = binary ? binary[r][c] : null;
+        if (!cellGray) { skipped++; continue; }
 
         // 空セル判定
-        if (_isEmpty(cell)) { skipped++; continue; }
+        if (_isEmpty(cellGray)) { skipped++; continue; }
 
-        // 複数バリエーションで認識
-        const digit = await _recognizeCell(cell);
+        // 複数バリエーションで認識 (gray + binary両方使用)
+        const digit = await _recognizeCell(cellGray, cellBin);
         if (digit > 0) {
           grid[r][c] = digit;
           recognized++;
@@ -126,8 +128,8 @@ const DigitRecognizer = (() => {
   // ────────────────────────────────────────
   // セル単位で複数前処理バリエーションを試して多数決
   // ────────────────────────────────────────
-  async function _recognizeCell(cellImageData) {
-    const variants = _createVariants(cellImageData);
+  async function _recognizeCell(cellGray, cellBin) {
+    const variants = _createVariants(cellGray, cellBin);
     const votes = {};
     const confs = {};
 
@@ -173,31 +175,28 @@ const DigitRecognizer = (() => {
   // ────────────────────────────────────────
   // 前処理バリエーション: 各種変換したcanvasの配列
   // ────────────────────────────────────────
-  function _createVariants(cellImageData) {
+  function _createVariants(cellGray, cellBin) {
     const results = [];
-    const w = cellImageData.width;
-    const h = cellImageData.height;
 
-    // V1: グレースケール + 2倍
-    results.push(_prepareCell(cellImageData, false, 2));
+    // グレースケール系
+    results.push(_prepareCell(cellGray, false, 2));
+    results.push(_prepareCell(cellGray, false, 3));
+    results.push(_prepareCell(cellGray, false, 4));
+    results.push(_prepareCell(cellGray, true, 3));  // コントラスト強調
+    results.push(_prepareCell(cellGray, true, 4));
 
-    // V2: グレースケール + 3倍
-    results.push(_prepareCell(cellImageData, false, 3));
+    // 数字中心切り出し (暗ピクセルのバウンディングボックスで正規化)
+    const centered = _centerDigit(cellGray);
+    if (centered) {
+      results.push(_prepareCell(centered, false, 3));
+      results.push(_prepareCell(centered, true, 3));
+    }
 
-    // V3: グレースケール + 4倍
-    results.push(_prepareCell(cellImageData, false, 4));
-
-    // V4: コントラスト強調 + 3倍
-    results.push(_prepareCell(cellImageData, true, 3));
-
-    // V5: コントラスト強調 + 4倍
-    results.push(_prepareCell(cellImageData, true, 4));
-
-    // V6: Otsu二値化 + 3倍
-    results.push(_prepareCellBinarized(cellImageData, 3));
-
-    // V7: Otsu二値化 + 4倍
-    results.push(_prepareCellBinarized(cellImageData, 4));
+    // 二値化セル系 (imageProcessorで適応的閾値処理済み)
+    if (cellBin) {
+      results.push(_prepareBinaryCell(cellBin, 3));
+      results.push(_prepareBinaryCell(cellBin, 4));
+    }
 
     return results;
   }
@@ -246,42 +245,21 @@ const DigitRecognizer = (() => {
   }
 
   // ────────────────────────────────────────
-  // Otsu二値化バリエーション
+  // 二値化済みセルの前処理 (imageProcessorから取得済みの二値化画像)
   // ────────────────────────────────────────
-  function _prepareCellBinarized(cellImageData, scale) {
+  function _prepareBinaryCell(cellImageData, scale) {
     const w = cellImageData.width;
     const h = cellImageData.height;
     const d = cellImageData.data;
 
-    // Otsu閾値計算
-    const histogram = new Array(256).fill(0);
-    for (let i = 0; i < d.length; i += 4) {
-      histogram[d[i]]++;
-    }
-    const total = w * h;
-    let sumB = 0, wB = 0, max = 0, sum = 0, thresh = 128;
-    for (let i = 0; i < 256; i++) sum += i * histogram[i];
-    for (let i = 0; i < 256; i++) {
-      wB += histogram[i];
-      if (wB === 0) continue;
-      const wF = total - wB;
-      if (wF === 0) break;
-      sumB += i * histogram[i];
-      const mB = sumB / wB;
-      const mF = (sum - sumB) / wF;
-      const between = wB * wF * (mB - mF) * (mB - mF);
-      if (between > max) { max = between; thresh = i; }
-    }
-
-    // 二値化 (黒文字 on 白背景)
+    // 反転: imageProcessorの二値化は白文字on黒背景 → 黒文字on白背景に
     const imgData = new ImageData(new Uint8ClampedArray(d.length), w, h);
     for (let i = 0; i < d.length; i += 4) {
-      const v = d[i] < thresh ? 0 : 255;
+      const v = d[i] > 128 ? 0 : 255;
       imgData.data[i] = imgData.data[i + 1] = imgData.data[i + 2] = v;
       imgData.data[i + 3] = 255;
     }
 
-    // パディング + 拡大
     const pad = Math.floor(Math.min(w, h) * 0.3);
     const pw = w + pad * 2;
     const ph = h + pad * 2;
@@ -297,10 +275,70 @@ const DigitRecognizer = (() => {
     tmp.height = h;
     tmp.getContext('2d').putImageData(imgData, 0, 0);
 
-    ctx.imageSmoothingEnabled = false; // 二値化画像はスムージングしない
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(tmp, 0, 0, w, h, pad * scale, pad * scale, w * scale, h * scale);
-
     return canvas;
+  }
+
+  // ────────────────────────────────────────
+  // 数字の中心切り出し: 暗ピクセルのbboxで切り出し正規化
+  // ────────────────────────────────────────
+  function _centerDigit(cellImageData) {
+    const w = cellImageData.width;
+    const h = cellImageData.height;
+    const d = cellImageData.data;
+
+    // 閾値: 平均値の70%以下を暗とする
+    let sum = 0, count = 0;
+    for (let i = 0; i < d.length; i += 4) { sum += d[i]; count++; }
+    const mean = sum / count;
+    const thresh = mean * 0.7;
+
+    // 暗ピクセルのバウンディングボックス
+    let minX = w, maxX = 0, minY = h, maxY = 0;
+    const margin = Math.floor(Math.min(w, h) * 0.1);
+    for (let y = margin; y < h - margin; y++) {
+      for (let x = margin; x < w - margin; x++) {
+        if (d[(y * w + x) * 4] < thresh) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    // 数字が見つからない
+    if (minX >= maxX || minY >= maxY) return null;
+
+    const dw = maxX - minX + 1;
+    const dh = maxY - minY + 1;
+    // 数字が小さすぎる → ノイズ
+    if (dw < 4 || dh < 4) return null;
+
+    // 正方形に正規化して中央配置
+    const side = Math.max(dw, dh);
+    const outSize = Math.round(side * 1.4); // 少し余白
+    const ox = Math.round((outSize - dw) / 2);
+    const oy = Math.round((outSize - dh) / 2);
+
+    const out = new ImageData(outSize, outSize);
+    // 白で初期化
+    for (let i = 0; i < out.data.length; i += 4) {
+      out.data[i] = out.data[i + 1] = out.data[i + 2] = 255;
+      out.data[i + 3] = 255;
+    }
+    // 数字をコピー
+    for (let y = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++) {
+        const srcIdx = ((minY + y) * w + (minX + x)) * 4;
+        const dstIdx = ((oy + y) * outSize + (ox + x)) * 4;
+        out.data[dstIdx] = out.data[dstIdx + 1] = out.data[dstIdx + 2] = d[srcIdx];
+        out.data[dstIdx + 3] = 255;
+      }
+    }
+
+    return out;
   }
 
   // ────────────────────────────────────────
