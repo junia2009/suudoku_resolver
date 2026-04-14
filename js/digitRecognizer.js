@@ -120,7 +120,7 @@ const DigitRecognizer = (() => {
     const darkRatio = darkCount / count;
 
     // stddev低い = 均一 = 空, darkRatio低すぎ = 数字なし
-    return stddev < 15 || darkRatio < 0.02;
+    return stddev < 12 || darkRatio < 0.01;
   }
 
   // ────────────────────────────────────────
@@ -162,8 +162,8 @@ const DigitRecognizer = (() => {
     const bestVotes = votes[best];
     const bestConf = confs[best] || 0;
 
-    // 最低でも2票、または1票でも信頼度80以上
-    if (bestVotes >= 2 || bestConf >= 80) {
+    // 最低でも2票、または1票でも信頼度65以上
+    if (bestVotes >= 2 || bestConf >= 65) {
       return best;
     }
 
@@ -178,20 +178,26 @@ const DigitRecognizer = (() => {
     const w = cellImageData.width;
     const h = cellImageData.height;
 
-    // V1: グレースケールそのまま + パディング + 3倍拡大
+    // V1: グレースケール + 2倍
+    results.push(_prepareCell(cellImageData, false, 2));
+
+    // V2: グレースケール + 3倍
     results.push(_prepareCell(cellImageData, false, 3));
 
-    // V2: グレースケール + パディング + 4倍拡大
+    // V3: グレースケール + 4倍
     results.push(_prepareCell(cellImageData, false, 4));
 
-    // V3: コントラスト強調 + パディング + 3倍
+    // V4: コントラスト強調 + 3倍
     results.push(_prepareCell(cellImageData, true, 3));
-
-    // V4: Otsu二値化 + パディング + 3倍
-    results.push(_prepareCellBinarized(cellImageData, 3));
 
     // V5: コントラスト強調 + 4倍
     results.push(_prepareCell(cellImageData, true, 4));
+
+    // V6: Otsu二値化 + 3倍
+    results.push(_prepareCellBinarized(cellImageData, 3));
+
+    // V7: Otsu二値化 + 4倍
+    results.push(_prepareCellBinarized(cellImageData, 4));
 
     return results;
   }
