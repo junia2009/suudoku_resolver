@@ -658,6 +658,7 @@ canvas {
 
 /* ===== ユーティリティ ===== */
 .hidden { display: none !important; }
+#input-gallery { display: none; }
 
 /* ===== 解法解説画面 ===== */
 #explain-progress {
