@@ -25,12 +25,6 @@ function onOpenCvReady() {
   ImageProcessor.onCvReady();
 }
 
-// async ロードにより app.js より先に WASM 初期化が完了していた場合の処理
-if (window._opencvRuntimeReady) {
-  delete window._opencvRuntimeReady;
-  onOpenCvReady();
-}
-
 function onOpenCvError() {
   console.error('OpenCV.js の読み込みに失敗しました');
   alert('OpenCV.js の読み込みに失敗しました。ネットワーク接続を確認してください。\n\n補正機能が利用できませんが、手動コーナー選択で続行できます。');

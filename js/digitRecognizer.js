@@ -1,16 +1,10 @@
 ﻿/**
- * digitRecognizer.js  v1.6.0
+ * digitRecognizer.js  v1.4.0
  *
- * デュアルPSMアプローチ + 高精度前処理:
+ * デュアルPSMアプローチ:
  *   - PSM 10 (単一文字) と PSM 13 (Raw line) の2つのOCRワーカーで独立認識
  *   - 異なるセグメンテーションエンジンの結果を統合して精度向上
  *   - 各セルで複数前処理バリエーション × 2 PSMモード = 多数決
- *
- * v1.5.0 精度向上:
- *   - Otsu's 二値化バリアント追加 (Otsu 1979, IEEE Trans. SMC 9(1))
- *   - アンシャープマスクによる輪郭強調バリアント追加
- *   - 連結成分解析を用いた空セル判定強化でフォールスポジティブ削減
- *   - 信頼度スコアに基づく競合解決で誤認識数字の優先選択精度向上
  */
 
 const DigitRecognizer = (() => {
@@ -65,7 +59,6 @@ const DigitRecognizer = (() => {
     }
 
     const grid = Array.from({ length: 9 }, () => new Array(9).fill(0));
-    const confGrid = Array.from({ length: 9 }, () => new Array(9).fill(0));
     let recognized = 0;
     let skipped = 0;
 
@@ -76,23 +69,22 @@ const DigitRecognizer = (() => {
         if (!cellGray) { skipped++; continue; }
         if (_isEmpty(cellGray)) { skipped++; continue; }
 
-        const result = await _recognizeCell(cellGray, cellBin);
-        if (result.digit > 0) {
-          grid[r][c] = result.digit;
-          confGrid[r][c] = result.conf;
+        const digit = await _recognizeCell(cellGray, cellBin);
+        if (digit > 0) {
+          grid[r][c] = digit;
           recognized++;
         }
       }
     }
 
     console.log('Recognized: ' + recognized + ', skipped: ' + skipped);
-    _resolveConflicts(grid, confGrid);
+    _resolveConflicts(grid);
     const final = grid.flat().filter(v => v !== 0).length;
     console.log('After conflict resolution: ' + final + ' digits');
     return grid;
   }
 
-  // ── 空セル判定 (連結成分解析強化版) ──
+  // ── 空セル判定 ──
   function _isEmpty(cellImageData) {
     const d = cellImageData.data;
     const w = cellImageData.width;
@@ -115,56 +107,7 @@ const DigitRecognizer = (() => {
         if (d[(y * w + x) * 4] < threshold) darkCount++;
       }
     }
-    const darkRatio = darkCount / count;
-
-    // 均一画像 or 暗ピクセルが極少 → 空
-    if (stddev < 12 || darkRatio < 0.01) return true;
-
-    // 暗ピクセルが多い場合は明らかに数字あり
-    if (darkRatio > 0.4) return false;
-
-    // 連結成分解析: 最大の暗ピクセル塊が数字として十分か検証
-    // (散在したノイズ点がある空セルとの判別)
-    const binary = new Uint8Array(w * h);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        binary[y * w + x] = d[(y * w + x) * 4] < threshold ? 1 : 0;
-      }
-    }
-    const maxComp = _largestComponentSize(binary, w, h);
-    // 最大連結成分がセル面積の2%未満なら空とみなす
-    return maxComp < w * h * 0.02;
-  }
-
-  // ── 最大連結成分の画素数を返す (4近傍 BFS) ──
-  function _largestComponentSize(binary, w, h) {
-    const visited = new Uint8Array(w * h);
-    let maxSize = 0;
-    const queue = [];
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const idx = y * w + x;
-        if (!binary[idx] || visited[idx]) continue;
-        // BFS
-        let size = 0;
-        queue.length = 0;
-        queue.push(idx);
-        visited[idx] = 1;
-        let head = 0;
-        while (head < queue.length) {
-          const cur = queue[head++];
-          size++;
-          const cy = Math.floor(cur / w);
-          const cx = cur % w;
-          if (cy > 0)     { const ni = cur - w; if (binary[ni] && !visited[ni]) { visited[ni] = 1; queue.push(ni); } }
-          if (cy < h - 1) { const ni = cur + w; if (binary[ni] && !visited[ni]) { visited[ni] = 1; queue.push(ni); } }
-          if (cx > 0)     { const ni = cur - 1; if (binary[ni] && !visited[ni]) { visited[ni] = 1; queue.push(ni); } }
-          if (cx < w - 1) { const ni = cur + 1; if (binary[ni] && !visited[ni]) { visited[ni] = 1; queue.push(ni); } }
-        }
-        if (size > maxSize) maxSize = size;
-      }
-    }
-    return maxSize;
+    return stddev < 12 || (darkCount / count) < 0.01;
   }
 
   // ── セル認識: デュアルPSM × 複数前処理 ──
@@ -187,13 +130,6 @@ const DigitRecognizer = (() => {
       variants.push(_prepareBinaryCell(cellBin, 3));
       variants.push(_prepareBinaryCell(cellBin, 4));
     }
-    // Otsu 二値化バリアント (Otsu 1979 — 文書画像の大域的二値化に最適)
-    variants.push(_prepareWithOtsu(cellGray, 3));
-    variants.push(_prepareWithOtsu(cellGray, 4));
-    // アンシャープマスク + グレースケール/Otsu バリアント (輪郭強調で認識率向上)
-    const sharpened = _sharpenedCopy(cellGray);
-    variants.push(_prepareCell(sharpened, false, 3));
-    variants.push(_prepareWithOtsu(sharpened, 3));
 
     const votes = {};
     const confs = {};
@@ -208,12 +144,11 @@ const DigitRecognizer = (() => {
 
     // PSM 13 で主要バリエーション認識 (全部はやらず速度考慮)
     if (_worker13 && _ready13) {
-      // グレー3x, グレー4x, コントラスト3x, centered3x, Otsu3x → 最大5つ
+      // グレー3x, グレー4x, コントラスト3x, centered3x → 最大4つ
       const psm13variants = [
         _prepareCell(cellGray, false, 3),
         _prepareCell(cellGray, false, 4),
         _prepareCell(cellGray, true, 3),
-        _prepareWithOtsu(cellGray, 3),
       ];
       if (centered) {
         psm13variants.push(_prepareCell(centered, false, 3));
@@ -225,7 +160,7 @@ const DigitRecognizer = (() => {
     }
 
     const digits = Object.keys(votes).map(Number);
-    if (digits.length === 0) return { digit: 0, conf: 0 };
+    if (digits.length === 0) return 0;
 
     digits.sort((a, b) => {
       const vd = votes[b] - votes[a];
@@ -239,9 +174,9 @@ const DigitRecognizer = (() => {
 
     // 2票以上、または1票でも信頼度65以上
     if (bestVotes >= 2 || bestConf >= 65) {
-      return { digit: best, conf: bestConf };
+      return best;
     }
-    return { digit: 0, conf: 0 };
+    return 0;
   }
 
   // ── 個別OCR実行 ──
@@ -317,93 +252,7 @@ const DigitRecognizer = (() => {
     return canvas;
   }
 
-  // ── Otsu's 大域的二値化しきい値計算 (Otsu 1979) ──
-  // クラス間分散を最大化するしきい値を求める古典的手法
-  function _computeOtsuThreshold(d, w, h) {
-    const hist = new Int32Array(256);
-    for (let i = 0; i < d.length; i += 4) hist[d[i]]++;
-    const total = w * h;
-    let sum = 0;
-    for (let i = 0; i < 256; i++) sum += i * hist[i];
-    let sumB = 0, wB = 0, maxVar = 0, threshold = 128;
-    for (let t = 0; t < 256; t++) {
-      wB += hist[t];
-      if (wB === 0) continue;
-      const wF = total - wB;
-      if (wF === 0) break;
-      sumB += t * hist[t];
-      const mB = sumB / wB;
-      const mF = (sum - sumB) / wF;
-      const varBetween = (wB / total) * (wF / total) * (mB - mF) * (mB - mF);
-      if (varBetween > maxVar) { maxVar = varBetween; threshold = t; }
-    }
-    return threshold;
-  }
-
-  // ── Otsu 二値化前処理: 白地に黒文字の二値画像を生成 ──
-  function _prepareWithOtsu(cellImageData, scale) {
-    const w = cellImageData.width;
-    const h = cellImageData.height;
-    const d = cellImageData.data;
-    const thresh = _computeOtsuThreshold(d, w, h);
-    const bin = new ImageData(new Uint8ClampedArray(d.length), w, h);
-    for (let i = 0; i < d.length; i += 4) {
-      // しきい値以下 (暗ピクセル = 数字ストローク) → 黒(0), 背景 → 白(255)
-      const v = d[i] <= thresh ? 0 : 255;
-      bin.data[i] = bin.data[i + 1] = bin.data[i + 2] = v;
-      bin.data[i + 3] = 255;
-    }
-    const pad = Math.floor(Math.min(w, h) * 0.3);
-    const pw = w + pad * 2;
-    const ph = h + pad * 2;
-    const canvas = document.createElement('canvas');
-    canvas.width = pw * scale;
-    canvas.height = ph * scale;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const tmp = document.createElement('canvas');
-    tmp.width = w;
-    tmp.height = h;
-    tmp.getContext('2d').putImageData(bin, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(tmp, 0, 0, w, h, pad * scale, pad * scale, w * scale, h * scale);
-    return canvas;
-  }
-
-  // ── アンシャープマスク: ラプラシアンカーネルで輪郭強調 ──
-  // 参考: Gonzalez & Woods "Digital Image Processing" §3.6
-  // カーネル: [0,-1,0; -1,5,-1; 0,-1,0]
-  // 中心係数 5 = 1 (元画像) + 4 (ラプラシアン強調量), 隣接係数 -1 は差分に相当
-  function _applyUnsharpMask(imgData) {
-    const w = imgData.width;
-    const h = imgData.height;
-    const d = imgData.data;
-    const src = new Uint8ClampedArray(d);
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        const i = (y * w + x) * 4;
-        const v = Math.max(0, Math.min(255,
-          5 * src[i]
-          - src[((y - 1) * w + x) * 4]
-          - src[((y + 1) * w + x) * 4]
-          - src[(y * w + x - 1) * 4]
-          - src[(y * w + x + 1) * 4]
-        ));
-        d[i] = d[i + 1] = d[i + 2] = v;
-      }
-    }
-  }
-
-  // ── アンシャープマスクを適用したコピーを返す ──
-  function _sharpenedCopy(cellImageData) {
-    const w = cellImageData.width;
-    const h = cellImageData.height;
-    const copy = new ImageData(new Uint8ClampedArray(cellImageData.data), w, h);
-    _applyUnsharpMask(copy);
-    return copy;
-  }
-
+  // ── 数字の中心切り出し ──
   function _centerDigit(cellImageData) {
     const w = cellImageData.width;
     const h = cellImageData.height;
@@ -463,61 +312,29 @@ const DigitRecognizer = (() => {
     }
   }
 
-  // ── 数独制約チェック: 信頼度スコアを用いて低信頼の競合数字を除去 ──
-  function _resolveConflicts(grid, confGrid) {
-    // 指定セルを 0 にし、confGrid が渡されていれば信頼度もクリア
-    function clearCell(r, c) {
-      grid[r][c] = 0;
-      if (confGrid) confGrid[r][c] = 0;
-    }
-
+  // ── 数独制約チェック ──
+  function _resolveConflicts(grid) {
     let changed = true;
     while (changed) {
       changed = false;
-      // 行チェック
       for (let row = 0; row < 9; row++) {
         const seen = {};
         for (let col = 0; col < 9; col++) {
           const v = grid[row][col];
           if (v === 0) continue;
-          const conf = confGrid ? confGrid[row][col] : 0;
-          if (seen[v] !== undefined) {
-            // 信頼度が低い方を削除 (同値なら後者を削除)
-            const prev = seen[v];
-            if (conf > prev.conf) {
-              clearCell(row, prev.col);
-              seen[v] = { col, conf };
-            } else {
-              clearCell(row, col);
-            }
-            changed = true;
-          } else {
-            seen[v] = { col, conf };
-          }
+          if (seen[v] !== undefined) { grid[row][col] = 0; changed = true; }
+          else seen[v] = col;
         }
       }
-      // 列チェック
       for (let col = 0; col < 9; col++) {
         const seen = {};
         for (let row = 0; row < 9; row++) {
           const v = grid[row][col];
           if (v === 0) continue;
-          const conf = confGrid ? confGrid[row][col] : 0;
-          if (seen[v] !== undefined) {
-            const prev = seen[v];
-            if (conf > prev.conf) {
-              clearCell(prev.row, col);
-              seen[v] = { row, conf };
-            } else {
-              clearCell(row, col);
-            }
-            changed = true;
-          } else {
-            seen[v] = { row, conf };
-          }
+          if (seen[v] !== undefined) { grid[row][col] = 0; changed = true; }
+          else seen[v] = row;
         }
       }
-      // 3×3 ブロックチェック
       for (let br = 0; br < 9; br += 3) {
         for (let bc = 0; bc < 9; bc += 3) {
           const seen = {};
@@ -525,19 +342,8 @@ const DigitRecognizer = (() => {
             for (let c = bc; c < bc + 3; c++) {
               const v = grid[r][c];
               if (v === 0) continue;
-              const conf = confGrid ? confGrid[r][c] : 0;
-              if (seen[v] !== undefined) {
-                const prev = seen[v];
-                if (conf > prev.conf) {
-                  clearCell(prev.r, prev.c);
-                  seen[v] = { r, c, conf };
-                } else {
-                  clearCell(r, c);
-                }
-                changed = true;
-              } else {
-                seen[v] = { r, c, conf };
-              }
+              if (seen[v]) { grid[r][c] = 0; changed = true; }
+              else seen[v] = true;
             }
           }
         }
