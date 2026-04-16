@@ -603,14 +603,14 @@ const ImageProcessor = (() => {
     resetManual,
     get isManualMode() { return _manualMode; },
     get isCvReady() { return _cvReady; },
-    waitForCv(timeoutMs = 15000) {
+    waitForCv(timeoutMs = 60000) {
       if (_cvReady) return Promise.resolve();
       return new Promise((resolve, reject) => {
         const start = Date.now();
         const check = setInterval(() => {
           if (_cvReady) { clearInterval(check); resolve(); }
           else if (Date.now() - start > timeoutMs) { clearInterval(check); reject(new Error('timeout')); }
-        }, 200);
+        }, 300);
       });
     }
   };

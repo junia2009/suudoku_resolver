@@ -71,7 +71,7 @@ function _bindStepButtons() {
     if (!ImageProcessor.isCvReady) {
       UI.showLoading('OpenCV.js を読み込み中...');
       try {
-        await ImageProcessor.waitForCv(20000);
+        await ImageProcessor.waitForCv(60000);
       } catch {
         UI.hideLoading();
         alert('OpenCV.js の読み込みに失敗しました。ページをリロードしてやり直してください。');

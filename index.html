@@ -17,7 +17,7 @@
   <div id="app">
     <header>
       <h1>ナンプレ絶対解くマン</h1>
-      <p class="version">ver1.6.3</p>
+      <p class="version">ver1.7.0</p>
       <p class="subtitle">写真を撮影 or 選択して数独を自動解読</p>
     </header>
 
@@ -130,32 +130,73 @@
   </div>
 
   <!-- OpenCV.js (CDN with fallback) -->
-  <!-- Module.onRuntimeInitialized で WASM 初期化完了を確実に検知する。
-       async スクリプトが app.js より先に実行された場合はフラグで通知する。 -->
+  <!-- @techstark/opencv-js は UMD ラッパーでグローバル Module を参照しないため、
+       script.onload で window.cv の型を判定し適切に初期化する。 -->
   <script>
+    // ── OpenCV.js 初期化完了を通知する共通関数 ──
+    function _notifyOpenCvReady() {
+      if (window._opencvNotified) return;
+      window._opencvNotified = true;
+      console.log('OpenCV.js 初期化完了');
+      if (typeof onOpenCvReady === 'function') {
+        onOpenCvReady();
+      } else {
+        window._opencvRuntimeReady = true;
+      }
+    }
+
+    // グローバル Module (docs.opencv.org 版の標準パターン用フォールバック)
     var Module = {
       onRuntimeInitialized: function () {
-        if (typeof onOpenCvReady === 'function') {
-          onOpenCvReady();
-        } else {
-          // app.js がまだロードされていない場合はフラグで通知
-          window._opencvRuntimeReady = true;
-          console.warn('OpenCV.js WASM 初期化完了: onOpenCvReady 未定義のためフラグを設定します');
-        }
+        _notifyOpenCvReady();
       }
     };
 
-    // OpenCV.js CDN URLs (primary + fallbacks)
+    // ── OpenCV.js ロード後の初期化ハンドラ ──
+    function _initOpenCv() {
+      var _cv = window.cv;
+      if (!_cv) {
+        console.warn('window.cv が undefined — Module パターンで待機します');
+        return;
+      }
+
+      if (typeof _cv === 'function') {
+        // @techstark UMD パターン: cv はファクトリー関数
+        console.log('OpenCV.js factory パターンを検出');
+        window.cv = _cv({
+          onRuntimeInitialized: function () { _notifyOpenCvReady(); }
+        });
+      } else if (_cv instanceof Promise) {
+        // Promise パターン
+        console.log('OpenCV.js Promise パターンを検出');
+        _cv.then(function (cvObj) {
+          window.cv = cvObj;
+          _notifyOpenCvReady();
+        });
+      } else if (typeof _cv === 'object') {
+        // 既にオブジェクト — cv.Mat が存在すれば初期化済み
+        if (_cv.Mat) {
+          console.log('OpenCV.js 既に初期化済み');
+          _notifyOpenCvReady();
+        } else {
+          // まだ初期化中 → onRuntimeInitialized を上書き設定
+          console.log('OpenCV.js オブジェクト検出、WASM 初期化待ち');
+          _cv.onRuntimeInitialized = function () { _notifyOpenCvReady(); };
+        }
+      }
+    }
+
+    // ── CDN フォールバックチェーン ──
     var _opencvCdnUrls = [
       'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.12.0-release.1/dist/opencv.js',
       'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js',
       'https://cdn.jsdelivr.net/npm/@techstark/opencv-js/dist/opencv.js'
     ];
     var _opencvUrlIndex = 0;
+    var _opencvLoadTimer = null;
 
     function _loadOpenCvScript() {
       if (_opencvUrlIndex >= _opencvCdnUrls.length) {
-        // All CDN sources exhausted
         if (typeof onOpenCvError === 'function') onOpenCvError();
         return;
       }
@@ -164,10 +205,26 @@
       var script = document.createElement('script');
       script.async = true;
       script.src = url;
+
+      // ダウンロード タイムアウト (45秒)
+      _opencvLoadTimer = setTimeout(function () {
+        console.warn('OpenCV.js ダウンロードタイムアウト (' + url + ')');
+        script.onerror = null;
+        script.onload = null;
+        _opencvUrlIndex++;
+        _loadOpenCvScript();
+      }, 45000);
+
       script.onerror = function () {
+        clearTimeout(_opencvLoadTimer);
         console.warn('OpenCV.js の読み込みに失敗 (' + url + ')。次の CDN を試します…');
         _opencvUrlIndex++;
         _loadOpenCvScript();
+      };
+      script.onload = function () {
+        clearTimeout(_opencvLoadTimer);
+        console.log('OpenCV.js スクリプトダウンロード完了: ' + url);
+        _initOpenCv();
       };
       document.head.appendChild(script);
     }

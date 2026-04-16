@@ -3,7 +3,7 @@
  * Cache-first + network fallback 戦略
  */
 
-const CACHE_NAME = 'numplace-solver-v4';
+const CACHE_NAME = 'numplace-solver-v5';
 
 const PRECACHE_URLS = [
   './',
@@ -63,7 +63,11 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
           return response;
         })
-        .catch(() => caches.match(event.request))
+        .catch(() => caches.match(event.request).then((cached) => {
+          if (cached) return cached;
+          // キャッシュにも無い場合はネットワークエラーを返す
+          return new Response('Network error', { status: 503, statusText: 'Service Unavailable' });
+        }))
     );
     return;
   }
