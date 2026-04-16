@@ -3,7 +3,7 @@
  * Cache-first + network fallback 戦略
  */
 
-const CACHE_NAME = 'numplace-solver-v9';
+const CACHE_NAME = 'numplace-solver-v10';
 
 const PRECACHE_URLS = [
   './',
