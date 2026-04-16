@@ -3,7 +3,7 @@
  * Cache-first + network fallback 戦略
  */
 
-const CACHE_NAME = 'numplace-solver-v1';
+const CACHE_NAME = 'numplace-solver-v2';
 
 const PRECACHE_URLS = [
   './',
@@ -22,6 +22,8 @@ const PRECACHE_URLS = [
 
 // CDN リソース（大きいのでネットワーク優先、キャッシュにフォールバック）
 const CDN_URLS = [
+  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.12.0-release.1/dist/opencv.js',
+  'https://docs.opencv.org/4.12.0/opencv.js',
   'https://docs.opencv.org/4.8.0/opencv.js',
   'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js',
 ];
