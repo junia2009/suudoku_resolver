@@ -65,8 +65,21 @@ function _bindStepButtons() {
     }
 
     UI.showLoading('グリッドを検出中...');
-    // 非同期処理を次フレームに遅延してローディングを表示させる
     await _nextFrame();
+
+    // OpenCV.js が未ロードなら待機する
+    if (!ImageProcessor.isCvReady) {
+      UI.showLoading('OpenCV.js を読み込み中...');
+      try {
+        await ImageProcessor.waitForCv(20000);
+      } catch {
+        UI.hideLoading();
+        alert('OpenCV.js の読み込みに失敗しました。ページをリロードしてやり直してください。');
+        return;
+      }
+      UI.showLoading('グリッドを検出中...');
+      await _nextFrame();
+    }
 
     try {
       const result = ImageProcessor.process(previewCanvas);

@@ -34,7 +34,6 @@ const ImageProcessor = (() => {
    */
   function process(srcCanvas) {
     if (!_cvReady) {
-      alert('OpenCV.js がまだ読み込まれていません。少し待ってください。');
       return null;
     }
 
@@ -598,5 +597,21 @@ const ImageProcessor = (() => {
     canvas.style.cursor = 'default';
   }
 
-  return { process, onCvReady, resetManual, get isManualMode() { return _manualMode; } };
+  return {
+    process,
+    onCvReady,
+    resetManual,
+    get isManualMode() { return _manualMode; },
+    get isCvReady() { return _cvReady; },
+    waitForCv(timeoutMs = 15000) {
+      if (_cvReady) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const start = Date.now();
+        const check = setInterval(() => {
+          if (_cvReady) { clearInterval(check); resolve(); }
+          else if (Date.now() - start > timeoutMs) { clearInterval(check); reject(new Error('timeout')); }
+        }, 200);
+      });
+    }
+  };
 })();
