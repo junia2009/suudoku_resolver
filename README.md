@@ -22,7 +22,7 @@ GitHub Pages で動作し、インストール不要でスマートフォン・P
 ## 技術スタック
 
 - **フロントエンド**: HTML / CSS / Vanilla JavaScript (モジュール構成) / PWA (Service Worker)
-- **画像処理**: [OpenCV.js 4.8.0](https://docs.opencv.org/4.8.0/opencv.js) — CLAHE・ガウシアンブラー・適応的閾値・形態学的処理・輪郭検出・射影変換・Hough 線検出
+- **画像処理**: [OpenCV.js 4.12.0](https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.12.0-release.1/dist/opencv.js) — CLAHE・ガウシアンブラー・適応的閾値・形態学的処理・輪郭検出・射影変換・Hough 線検出
 - **数字認識**: [Tesseract.js 5](https://tesseract.projectnaptha.com/) — デュアル PSM OCR エンジン
 - **ソルバー**: 制約伝播 (Naked Singles + Hidden Singles) + バックトラッキング (MRV ヒューリスティック)
 - **ホスティング**: GitHub Pages (静的サイト)

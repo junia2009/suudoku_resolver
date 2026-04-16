@@ -129,7 +129,7 @@
     </div>
   </div>
 
-  <!-- OpenCV.js (CDN) -->
+  <!-- OpenCV.js (CDN with fallback) -->
   <!-- Module.onRuntimeInitialized で WASM 初期化完了を確実に検知する。
        async スクリプトが app.js より先に実行された場合はフラグで通知する。 -->
   <script>
@@ -144,8 +144,35 @@
         }
       }
     };
+
+    // OpenCV.js CDN URLs (primary + fallbacks)
+    var _opencvCdnUrls = [
+      'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.12.0-release.1/dist/opencv.js',
+      'https://docs.opencv.org/4.12.0/opencv.js',
+      'https://docs.opencv.org/4.8.0/opencv.js'
+    ];
+    var _opencvUrlIndex = 0;
+
+    function _loadOpenCvScript() {
+      if (_opencvUrlIndex >= _opencvCdnUrls.length) {
+        // All CDN sources exhausted
+        if (typeof onOpenCvError === 'function') onOpenCvError();
+        return;
+      }
+      var url = _opencvCdnUrls[_opencvUrlIndex];
+      console.log('OpenCV.js を読み込み中: ' + url);
+      var script = document.createElement('script');
+      script.async = true;
+      script.src = url;
+      script.onerror = function () {
+        console.warn('OpenCV.js の読み込みに失敗 (' + url + ')。次の CDN を試します…');
+        _opencvUrlIndex++;
+        _loadOpenCvScript();
+      };
+      document.head.appendChild(script);
+    }
+    _loadOpenCvScript();
   </script>
-  <script async src="https://docs.opencv.org/4.8.0/opencv.js" onerror="onOpenCvError()"></script>
   <!-- Tesseract.js OCR (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
