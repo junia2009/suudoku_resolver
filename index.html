@@ -130,7 +130,22 @@
   </div>
 
   <!-- OpenCV.js (CDN) -->
-  <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady()" onerror="onOpenCvError()"></script>
+  <!-- Module.onRuntimeInitialized で WASM 初期化完了を確実に検知する。
+       async スクリプトが app.js より先に実行された場合はフラグで通知する。 -->
+  <script>
+    var Module = {
+      onRuntimeInitialized: function () {
+        if (typeof onOpenCvReady === 'function') {
+          onOpenCvReady();
+        } else {
+          // app.js がまだロードされていない場合はフラグで通知
+          window._opencvRuntimeReady = true;
+          console.warn('OpenCV.js WASM 初期化完了: onOpenCvReady 未定義のためフラグを設定します');
+        }
+      }
+    };
+  </script>
+  <script async src="https://docs.opencv.org/4.8.0/opencv.js" onerror="onOpenCvError()"></script>
   <!-- Tesseract.js OCR (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
