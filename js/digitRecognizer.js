@@ -237,9 +237,39 @@ const DigitRecognizer = (() => {
       return avgB - avgA;
     });
 
-    const best = digits[0];
-    const bestVotes = votes[best];
-    const bestMaxConf = maxConfs[best] || 0;
+    let best = digits[0];
+    let bestVotes = votes[best];
+    let bestMaxConf = maxConfs[best] || 0;
+
+    // ── 混同ペア構造解析 (3/8, 5/9) ──
+    // 両候補に票がある場合、閉領域(穴)の数で構造的に判別
+    if (digits.length >= 2) {
+      const target = ccCentered || cellGray;
+
+      // 3 vs 8: 8は2穴, 3は0穴
+      if ((best === 3 || best === 8) && votes[3] && votes[8]) {
+        const holes = _countHoles(target);
+        const structural = holes >= 2 ? 8 : 3;
+        if (structural !== best) {
+          console.log(`Structure 3/8: ${best}→${structural} (holes=${holes})`);
+          best = structural;
+          bestVotes = votes[best] || bestVotes;
+          bestMaxConf = maxConfs[best] || bestMaxConf;
+        }
+      }
+
+      // 5 vs 9: 9は上部にループ(穴あり), 5はオープン
+      if ((best === 5 || best === 9) && votes[5] && votes[9]) {
+        const topHoles = _countHoles(target, 0, 0.55);
+        const structural = topHoles >= 1 ? 9 : 5;
+        if (structural !== best) {
+          console.log(`Structure 5/9: ${best}→${structural} (topHoles=${topHoles})`);
+          best = structural;
+          bestVotes = votes[best] || bestVotes;
+          bestMaxConf = maxConfs[best] || bestMaxConf;
+        }
+      }
+    }
 
     // 2票以上、または1票でも最大信頼度60以上
     if (bestVotes >= 2 || bestMaxConf >= 60) {
@@ -512,6 +542,102 @@ const DigitRecognizer = (() => {
       const s = Math.round(((d[i] - minV) / range) * 255);
       d[i] = d[i + 1] = d[i + 2] = s;
     }
+  }
+
+  // ── 構造解析: 閉領域 (穴) の数を数える ──
+  // 8 → 2穴, 0/6/9/4 → 1穴, 1/2/3/5/7 → 0穴
+  // startYRatio/endYRatio で垂直方向の解析範囲を指定可能
+  function _countHoles(imageData, startYRatio, endYRatio) {
+    if (!startYRatio) startYRatio = 0;
+    if (!endYRatio) endYRatio = 1;
+    const w = imageData.width;
+    const h = imageData.height;
+    const d = imageData.data;
+    const yStart = Math.floor(h * startYRatio);
+    const yEnd = Math.floor(h * endYRatio);
+    const rh = yEnd - yStart;
+    if (rh < 4 || w < 4) return 0;
+
+    // Otsu二値化
+    const hist = new Array(256).fill(0);
+    for (let y = yStart; y < yEnd; y++) {
+      for (let x = 0; x < w; x++) hist[d[(y * w + x) * 4]]++;
+    }
+    const total = w * rh;
+    let sumAll = 0;
+    for (let i = 0; i < 256; i++) sumAll += i * hist[i];
+    let sumB = 0, wB = 0, maxVar = 0, thresh = 128;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB;
+      const mF = (sumAll - sumB) / wF;
+      const v = wB * wF * (mB - mF) * (mB - mF);
+      if (v > maxVar) { maxVar = v; thresh = t; }
+    }
+
+    // 1 = 前景(暗), 0 = 背景(明)
+    const bin = new Uint8Array(w * rh);
+    for (let y = 0; y < rh; y++) {
+      for (let x = 0; x < w; x++) {
+        bin[y * w + x] = d[((yStart + y) * w + x) * 4] < thresh ? 1 : 0;
+      }
+    }
+
+    // 外周背景をフラッドフィルで除去
+    const visited = new Uint8Array(w * rh);
+    const queue = [];
+    for (let x = 0; x < w; x++) {
+      if (!bin[x] && !visited[x]) { visited[x] = 1; queue.push(x); }
+      const idx = (rh - 1) * w + x;
+      if (!bin[idx] && !visited[idx]) { visited[idx] = 1; queue.push(idx); }
+    }
+    for (let y = 0; y < rh; y++) {
+      const l = y * w;
+      if (!bin[l] && !visited[l]) { visited[l] = 1; queue.push(l); }
+      const r = y * w + w - 1;
+      if (!bin[r] && !visited[r]) { visited[r] = 1; queue.push(r); }
+    }
+    while (queue.length > 0) {
+      const idx = queue.shift();
+      const x = idx % w, y = Math.floor(idx / w);
+      for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0]]) {
+        const nx = x + dx, ny = y + dy;
+        if (nx >= 0 && nx < w && ny >= 0 && ny < rh) {
+          const ni = ny * w + nx;
+          if (!bin[ni] && !visited[ni]) { visited[ni] = 1; queue.push(ni); }
+        }
+      }
+    }
+
+    // 残った未訪問の背景ピクセル群 = 穴
+    // ノイズ除去: 極小領域 (全体の0.5%未満) は無視
+    const minHoleArea = Math.max(3, Math.floor(total * 0.005));
+    let holes = 0;
+    for (let i = 0; i < w * rh; i++) {
+      if (!bin[i] && !visited[i]) {
+        let area = 0;
+        const hq = [i];
+        visited[i] = 1;
+        while (hq.length > 0) {
+          const hi = hq.shift();
+          area++;
+          const hx = hi % w, hy = Math.floor(hi / w);
+          for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0]]) {
+            const nx = hx + dx, ny = hy + dy;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < rh) {
+              const ni = ny * w + nx;
+              if (!bin[ni] && !visited[ni]) { visited[ni] = 1; hq.push(ni); }
+            }
+          }
+        }
+        if (area >= minHoleArea) holes++;
+      }
+    }
+    return holes;
   }
 
   // ── 信頼度を考慮した数独制約チェック ──
