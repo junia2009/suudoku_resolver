@@ -1,5 +1,5 @@
 ﻿/**
- * digitRecognizer.js  v1.4.0
+ * digitRecognizer.js  v1.6.0
  *
  * デュアルPSMアプローチ:
  *   - PSM 10 (単一文字) と PSM 13 (Raw line) の2つのOCRワーカーで独立認識
