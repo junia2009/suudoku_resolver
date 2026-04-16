@@ -17,7 +17,7 @@
   <div id="app">
     <header>
       <h1>ナンプレ絶対解くマン</h1>
-      <p class="version">ver1.7.0</p>
+      <p class="version">ver1.7.1</p>
       <p class="subtitle">写真を撮影 or 選択して数独を自動解読</p>
     </header>
 
@@ -138,6 +138,7 @@
       if (window._opencvNotified) return;
       window._opencvNotified = true;
       console.log('OpenCV.js 初期化完了');
+      if (window._cvReadyPoll) { clearInterval(window._cvReadyPoll); window._cvReadyPoll = null; }
       if (typeof onOpenCvReady === 'function') {
         onOpenCvReady();
       } else {
@@ -163,9 +164,18 @@
       if (typeof _cv === 'function') {
         // @techstark UMD パターン: cv はファクトリー関数
         console.log('OpenCV.js factory パターンを検出');
-        window.cv = _cv({
-          onRuntimeInitialized: function () { _notifyOpenCvReady(); }
-        });
+        try {
+          var result = _cv({
+            onRuntimeInitialized: function () { _notifyOpenCvReady(); }
+          });
+          if (result instanceof Promise) {
+            result.then(function (cvObj) { window.cv = cvObj; _notifyOpenCvReady(); });
+          } else if (result) {
+            window.cv = result;
+          }
+        } catch (e) {
+          console.error('OpenCV.js factory 呼び出しエラー:', e);
+        }
       } else if (_cv instanceof Promise) {
         // Promise パターン
         console.log('OpenCV.js Promise パターンを検出');
@@ -184,6 +194,22 @@
           _cv.onRuntimeInitialized = function () { _notifyOpenCvReady(); };
         }
       }
+
+      // Safety net: onRuntimeInitialized が発火しない場合に備え cv.Mat をポーリング
+      if (!window._opencvNotified) {
+        var pollStart = Date.now();
+        window._cvReadyPoll = setInterval(function () {
+          if (window._opencvNotified) { clearInterval(window._cvReadyPoll); return; }
+          var c = window.cv;
+          if (c && typeof c === 'object' && c.Mat) {
+            console.log('OpenCV.js ポーリングで初期化完了を検出');
+            _notifyOpenCvReady();
+          } else if (Date.now() - pollStart > 60000) {
+            clearInterval(window._cvReadyPoll);
+            console.warn('OpenCV.js WASM 初期化タイムアウト (60s)');
+          }
+        }, 1500);
+      }
     }
 
     // ── CDN フォールバックチェーン ──
@@ -194,6 +220,7 @@
     ];
     var _opencvUrlIndex = 0;
     var _opencvLoadTimer = null;
+    var _opencvCurrentScript = null;
 
     function _loadOpenCvScript() {
       if (_opencvUrlIndex >= _opencvCdnUrls.length) {
@@ -202,7 +229,14 @@
       }
       var url = _opencvCdnUrls[_opencvUrlIndex];
       console.log('OpenCV.js を読み込み中: ' + url);
+
+      // 前回失敗したスクリプト要素を除去
+      if (_opencvCurrentScript && _opencvCurrentScript.parentNode) {
+        _opencvCurrentScript.parentNode.removeChild(_opencvCurrentScript);
+      }
+
       var script = document.createElement('script');
+      _opencvCurrentScript = script;
       script.async = true;
       script.src = url;
 
@@ -211,6 +245,7 @@
         console.warn('OpenCV.js ダウンロードタイムアウト (' + url + ')');
         script.onerror = null;
         script.onload = null;
+        if (script.parentNode) script.parentNode.removeChild(script);
         _opencvUrlIndex++;
         _loadOpenCvScript();
       }, 45000);
@@ -242,6 +277,13 @@
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js');
+      // SW 更新時に自動リロード（古い HTML で動いている場合への対策）
+      navigator.serviceWorker.addEventListener('message', function (event) {
+        if (event.data && event.data.type === 'SW_UPDATED') {
+          console.log('Service Worker が更新されました。ページをリロードします。');
+          location.reload();
+        }
+      });
     }
   </script>
 </body>

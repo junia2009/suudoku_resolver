@@ -3,7 +3,7 @@
  * Cache-first + network fallback 戦略
  */
 
-const CACHE_NAME = 'numplace-solver-v5';
+const CACHE_NAME = 'numplace-solver-v6';
 
 const PRECACHE_URLS = [
   './',
@@ -36,18 +36,25 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-// activate: 古いキャッシュを削除
+// activate: 古いキャッシュを削除 → claim → クライアントに更新通知
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys
-          .filter((key) => key !== CACHE_NAME)
-          .map((key) => caches.delete(key))
+    caches.keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((key) => key !== CACHE_NAME)
+            .map((key) => caches.delete(key))
+        )
       )
-    )
+      .then(() => self.clients.claim())
+      .then(() => self.clients.matchAll())
+      .then((clients) => {
+        clients.forEach((client) => {
+          client.postMessage({ type: 'SW_UPDATED' });
+        });
+      })
   );
-  self.clients.claim();
 });
 
 // fetch: ローカルはキャッシュ優先、CDNはネットワーク優先
