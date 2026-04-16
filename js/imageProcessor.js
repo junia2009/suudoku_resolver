@@ -319,11 +319,11 @@ const ImageProcessor = (() => {
         // セルのグレースケール ROI を取得
         const cellGray = grayEq.roi(new cv.Rect(x, y, w, h));
 
-        // ──── シャープニング: ぼやけ補正 ────
+        // ──── シャープニング: 軽微なぼやけ補正 ────
         const sharpened = new cv.Mat();
         const blurForSharp = new cv.Mat();
-        cv.GaussianBlur(cellGray, blurForSharp, new cv.Size(0, 0), 2);
-        cv.addWeighted(cellGray, 1.5, blurForSharp, -0.5, 0, sharpened);
+        cv.GaussianBlur(cellGray, blurForSharp, new cv.Size(0, 0), 1.2);
+        cv.addWeighted(cellGray, 1.3, blurForSharp, -0.3, 0, sharpened);
         blurForSharp.delete();
 
         // ──── グレースケールセル (OCR用): シャープニング済みをリサイズ ────

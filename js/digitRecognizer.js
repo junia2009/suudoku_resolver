@@ -115,9 +115,9 @@ const DigitRecognizer = (() => {
     const mean = sum / count;
     const stddev = Math.sqrt(Math.max(0, sumSq / count - mean * mean));
 
-    // 暗いピクセルの割合を計算（動的閾値）
+    // 暗いピクセルの割合を計算
     let darkCount = 0;
-    const threshold = Math.min(mean * 0.6, mean - stddev * 1.5);
+    const threshold = mean * 0.6;
     for (let y = margin; y < h - margin; y++) {
       for (let x = margin; x < w - margin; x++) {
         if (d[(y * w + x) * 4] < threshold) darkCount++;
@@ -125,9 +125,9 @@ const DigitRecognizer = (() => {
     }
     const darkRatio = darkCount / count;
 
-    // stddev < 8 → ほぼ均一（空白）
-    // darkRatio < 0.005 → 暗いピクセルがほぼ無い
-    return stddev < 8 || darkRatio < 0.005;
+    // stddev < 10 → ほぼ均一（空白）
+    // darkRatio < 0.008 → 暗いピクセルがほぼ無い
+    return stddev < 10 || darkRatio < 0.008;
   }
 
   // ── セル認識: トリプルPSM × 複数前処理 + Otsu ──
