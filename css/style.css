@@ -659,6 +659,86 @@ canvas {
 /* ===== ユーティリティ ===== */
 .hidden { display: none !important; }
 
+/* ===== 解法解説画面 ===== */
+#explain-progress {
+  text-align: center;
+  margin-bottom: 12px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+#explain-step-label {
+  color: var(--primary);
+  font-weight: bold;
+}
+
+.explain-reason {
+  margin: 14px 0 8px;
+  padding: 12px 16px;
+  background: rgba(0, 229, 255, 0.06);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  min-height: 48px;
+  color: var(--text);
+}
+
+.explain-reason .reason-technique {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-right: 6px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+.explain-reason .reason-technique.naked-single {
+  background: rgba(0, 230, 118, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
+.explain-reason .reason-technique.hidden-single {
+  background: rgba(255, 145, 0, 0.15);
+  color: var(--secondary);
+  border: 1px solid rgba(255, 145, 0, 0.3);
+}
+
+.explain-reason .reason-technique.backtrack {
+  background: rgba(255, 23, 68, 0.15);
+  color: var(--danger);
+  border: 1px solid rgba(255, 23, 68, 0.3);
+}
+
+.sudoku-cell.explain-current {
+  background: rgba(0, 229, 255, 0.25) !important;
+  box-shadow: inset 0 0 12px rgba(0, 229, 255, 0.4), 0 0 8px rgba(0, 229, 255, 0.3);
+  animation: cellPulse 0.8s ease-in-out infinite alternate;
+  z-index: 1;
+}
+
+.sudoku-cell.explain-filled {
+  color: var(--success) !important;
+}
+
+@keyframes cellPulse {
+  from { box-shadow: inset 0 0 12px rgba(0, 229, 255, 0.4), 0 0 8px rgba(0, 229, 255, 0.3); }
+  to   { box-shadow: inset 0 0 18px rgba(0, 229, 255, 0.6), 0 0 14px rgba(0, 229, 255, 0.5); }
+}
+
+.btn-row.explain-nav {
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.btn-row.explain-nav .btn {
+  min-width: 80px;
+}
+
 /* ===== レスポンシブ (スマホ最適化) ===== */
 @media (max-width: 480px) {
   .card { padding: 16px; }

@@ -17,7 +17,7 @@
   <div id="app">
     <header>
       <h1>ナンプレ絶対解くマン</h1>
-      <p class="version">ver1.8.1</p>
+      <p class="version">ver1.9.0</p>
       <p class="subtitle">写真を撮影 or 選択して数独を自動解読</p>
     </header>
 
@@ -117,7 +117,28 @@
         <div id="sudoku-solution-grid" class="sudoku-grid"></div>
         <div class="btn-row">
           <button id="btn-back-4" class="btn btn-ghost">← 戻る</button>
+          <button id="btn-explain" class="btn btn-secondary">解説を見る</button>
           <button id="btn-restart" class="btn btn-primary">最初からやり直す</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ステップ5: 解法解説 -->
+    <section id="step-5" class="step-section hidden">
+      <div class="card">
+        <h2>解法解説</h2>
+        <div id="explain-progress">
+          <span id="explain-step-label">ステップ 0 / 0</span>
+        </div>
+        <div id="sudoku-explain-grid" class="sudoku-grid"></div>
+        <div id="explain-reason" class="explain-reason"></div>
+        <div class="btn-row explain-nav">
+          <button id="btn-explain-prev" class="btn btn-ghost">← 前</button>
+          <button id="btn-explain-auto" class="btn btn-secondary">▶ 自動再生</button>
+          <button id="btn-explain-next" class="btn btn-ghost">次 →</button>
+        </div>
+        <div class="btn-row">
+          <button id="btn-explain-back" class="btn btn-ghost">← 解答に戻る</button>
         </div>
       </div>
     </section>

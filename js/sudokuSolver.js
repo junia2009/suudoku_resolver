@@ -26,6 +26,191 @@ const SudokuSolver = (() => {
   }
 
   // ─────────────────────────────────────────────
+  // 解法ステップ記録付きsolve
+  // 戻り値: { solved: number[][], steps: Step[] } | null
+  // Step: { row, col, num, reason, detail }
+  // ─────────────────────────────────────────────
+  function solveWithSteps(inputGrid) {
+    if (!validate(inputGrid)) return null;
+
+    const grid = inputGrid.map(row => [...row]);
+    const steps = [];
+
+    // 制約伝播 (ステップ記録付き)
+    if (!_propagateWithSteps(grid, steps)) return null;
+
+    // バックトラッキング (ステップ記録付き)
+    const btSteps = [];
+    const result = _backtrackWithSteps(grid, btSteps);
+    if (!result) return null;
+
+    // バックトラッキングで確定した手順を追加
+    btSteps.forEach(s => steps.push(s));
+
+    return { solved: grid, steps };
+  }
+
+  // ─────────────────────────────────────────────
+  // 制約伝播 (ステップ記録付き)
+  // ─────────────────────────────────────────────
+  function _propagateWithSteps(grid, steps) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+
+      // Naked Singles
+      for (let row = 0; row < 9; row++) {
+        for (let col = 0; col < 9; col++) {
+          if (grid[row][col] !== 0) continue;
+
+          const candidates = [];
+          for (let num = 1; num <= 9; num++) {
+            if (_isValid(grid, row, col, num)) candidates.push(num);
+          }
+
+          if (candidates.length === 0) return false;
+          if (candidates.length === 1) {
+            grid[row][col] = candidates[0];
+            steps.push({
+              row, col, num: candidates[0],
+              reason: 'naked_single',
+              detail: `R${row+1}C${col+1}: この位置に入れられる数字は ${candidates[0]} のみ`
+            });
+            changed = true;
+          }
+        }
+      }
+
+      // Hidden Singles
+      let hiddenFound = false;
+      for (let num = 1; num <= 9 && !hiddenFound; num++) {
+        // 行
+        for (let row = 0; row < 9 && !hiddenFound; row++) {
+          if (grid[row].includes(num)) continue;
+          let onlyCol = -1, count = 0;
+          for (let col = 0; col < 9; col++) {
+            if (grid[row][col] === 0 && _isValid(grid, row, col, num)) {
+              onlyCol = col; count++;
+              if (count > 1) break;
+            }
+          }
+          if (count === 1) {
+            grid[row][onlyCol] = num;
+            steps.push({
+              row, col: onlyCol, num,
+              reason: 'hidden_single_row',
+              detail: `R${row+1}C${onlyCol+1}: ${row+1}行目で ${num} を置ける場所はここだけ`
+            });
+            changed = true;
+            hiddenFound = true;
+          }
+        }
+
+        // 列
+        for (let col = 0; col < 9 && !hiddenFound; col++) {
+          let hasNum = false;
+          for (let r = 0; r < 9; r++) { if (grid[r][col] === num) { hasNum = true; break; } }
+          if (hasNum) continue;
+          let onlyRow = -1, count = 0;
+          for (let row = 0; row < 9; row++) {
+            if (grid[row][col] === 0 && _isValid(grid, row, col, num)) {
+              onlyRow = row; count++;
+              if (count > 1) break;
+            }
+          }
+          if (count === 1) {
+            grid[onlyRow][col] = num;
+            steps.push({
+              row: onlyRow, col, num,
+              reason: 'hidden_single_col',
+              detail: `R${onlyRow+1}C${col+1}: ${col+1}列目で ${num} を置ける場所はここだけ`
+            });
+            changed = true;
+            hiddenFound = true;
+          }
+        }
+
+        // 3×3 ブロック
+        for (let br = 0; br < 9 && !hiddenFound; br += 3) {
+          for (let bc = 0; bc < 9 && !hiddenFound; bc += 3) {
+            let hasNum = false;
+            for (let r = br; r < br + 3 && !hasNum; r++) {
+              for (let c = bc; c < bc + 3 && !hasNum; c++) {
+                if (grid[r][c] === num) hasNum = true;
+              }
+            }
+            if (hasNum) continue;
+            let onlyR = -1, onlyC = -1, count = 0;
+            for (let r = br; r < br + 3; r++) {
+              for (let c = bc; c < bc + 3; c++) {
+                if (grid[r][c] === 0 && _isValid(grid, r, c, num)) {
+                  onlyR = r; onlyC = c; count++;
+                  if (count > 1) break;
+                }
+              }
+              if (count > 1) break;
+            }
+            if (count === 1) {
+              grid[onlyR][onlyC] = num;
+              const blockNum = Math.floor(br / 3) * 3 + Math.floor(bc / 3) + 1;
+              steps.push({
+                row: onlyR, col: onlyC, num,
+                reason: 'hidden_single_box',
+                detail: `R${onlyR+1}C${onlyC+1}: ブロック${blockNum}で ${num} を置ける場所はここだけ`
+              });
+              changed = true;
+              hiddenFound = true;
+            }
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  // ─────────────────────────────────────────────
+  // バックトラッキング (ステップ記録付き)
+  // ─────────────────────────────────────────────
+  function _backtrackWithSteps(grid, steps) {
+    const cell = _findEmptyCell(grid);
+    if (cell === null) return true;
+    if (cell === false) return false;
+
+    const [row, col] = cell;
+
+    for (let num = 1; num <= 9; num++) {
+      if (_isValid(grid, row, col, num)) {
+        grid[row][col] = num;
+
+        // バックトラッキング前に制約伝播で埋められるか試す
+        const snapshot = grid.map(r => [...r]);
+        const propSteps = [];
+        const propOk = _propagateWithSteps(grid, propSteps);
+
+        if (propOk && _backtrackWithSteps(grid, [])) {
+          // 成功 → 仮定と制約伝播ステップを記録
+          steps.push({
+            row, col, num,
+            reason: 'backtrack',
+            detail: `R${row+1}C${col+1}: 候補から ${num} を仮定`
+          });
+          propSteps.forEach(s => steps.push(s));
+          return true;
+        }
+
+        // 失敗 → 復元
+        for (let r = 0; r < 9; r++) {
+          for (let c = 0; c < 9; c++) {
+            grid[r][c] = snapshot[r][c];
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // ─────────────────────────────────────────────
   // 制約伝播: Naked Singles + Hidden Singles を繰り返し適用
   // バックトラッキング前に確定セルを埋めて探索空間を縮小する
   // ─────────────────────────────────────────────
@@ -264,5 +449,5 @@ const SudokuSolver = (() => {
     return count;
   }
 
-  return { solve, validate, countSolutions };
+  return { solve, solveWithSteps, validate, countSolutions };
 })();

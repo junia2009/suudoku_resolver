@@ -14,10 +14,12 @@ const UI = (() => {
       el.classList.remove('active');
       el.classList.add('hidden');
     });
+    // 解説画面 (step 5) はインジケーター上は step 4 として表示
+    const indicatorStep = n >= 5 ? 4 : n;
     document.querySelectorAll('#step-indicator .step').forEach((el, idx) => {
       el.classList.remove('active', 'done');
-      if (idx + 1 < n)  el.classList.add('done');
-      if (idx + 1 === n) el.classList.add('active');
+      if (idx + 1 < indicatorStep)  el.classList.add('done');
+      if (idx + 1 === indicatorStep) el.classList.add('active');
     });
 
     const target = document.getElementById(`step-${n}`);
@@ -195,5 +197,80 @@ const UI = (() => {
     el.className   = success ? 'success' : 'error';
   }
 
-  return { showStep, showLoading, hideLoading, renderGrid, readGridFromDom, renderSolution, showSolveResult };
+  // ─────────────────────────────────────────────
+  // 解法解説グリッド描画
+  // stepIndex までのステップを反映した盤面を描画。
+  // stepIndex=-1 で初期状態 (given のみ)。
+  // ─────────────────────────────────────────────
+  function renderExplanation(containerId, originalGrid, steps, stepIndex) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = '';
+    container.classList.add('sudoku-grid');
+
+    // given マスクと現在の盤面を構築
+    const grid = originalGrid.map(r => [...r]);
+    for (let i = 0; i <= stepIndex && i < steps.length; i++) {
+      const s = steps[i];
+      grid[s.row][s.col] = s.num;
+    }
+
+    const currentStep = stepIndex >= 0 && stepIndex < steps.length ? steps[stepIndex] : null;
+
+    for (let row = 0; row < 9; row++) {
+      for (let col = 0; col < 9; col++) {
+        const cell = document.createElement('div');
+        cell.classList.add('sudoku-cell');
+        cell.dataset.row = row;
+        cell.dataset.col = col;
+
+        const orig = originalGrid[row][col];
+        const val  = grid[row][col];
+
+        if (orig !== 0) {
+          cell.classList.add('given');
+        } else if (val !== 0) {
+          cell.classList.add('explain-filled');
+        } else {
+          cell.classList.add('empty');
+        }
+
+        // 今回のステップで埋めたセルをハイライト
+        if (currentStep && currentStep.row === row && currentStep.col === col) {
+          cell.classList.add('explain-current');
+        }
+
+        cell.textContent = val !== 0 ? String(val) : '';
+        container.appendChild(cell);
+      }
+    }
+
+    // 理由表示
+    const reasonEl = document.getElementById('explain-reason');
+    if (currentStep) {
+      const techniqueMap = {
+        naked_single:      { label: 'ネイキッドシングル', cls: 'naked-single' },
+        hidden_single_row: { label: 'ヒドゥンシングル(行)', cls: 'hidden-single' },
+        hidden_single_col: { label: 'ヒドゥンシングル(列)', cls: 'hidden-single' },
+        hidden_single_box: { label: 'ヒドゥンシングル(ブロック)', cls: 'hidden-single' },
+        backtrack:         { label: '仮定法(バックトラック)', cls: 'backtrack' },
+      };
+      const t = techniqueMap[currentStep.reason] || { label: currentStep.reason, cls: '' };
+      reasonEl.innerHTML =
+        `<span class="reason-technique ${t.cls}">${t.label}</span> ${_escapeHtml(currentStep.detail)}`;
+    } else {
+      reasonEl.innerHTML = '初期状態: 問題の数字のみが配置されています。';
+    }
+
+    // ステップラベル
+    document.getElementById('explain-step-label').textContent =
+      `ステップ ${stepIndex + 1} / ${steps.length}`;
+  }
+
+  function _escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  return { showStep, showLoading, hideLoading, renderGrid, readGridFromDom, renderSolution, showSolveResult, renderExplanation };
 })();

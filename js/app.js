@@ -16,6 +16,9 @@ const AppState = {
   recognizedGrid: null,   // 認識結果 number[][]
   editedGrid:     null,   // ユーザー編集後 number[][]
   solvedGrid:     null,   // 解答 number[][]
+  solveSteps:     null,   // 解法ステップ Step[]
+  explainIndex:   -1,     // 解説の現在ステップ
+  autoPlayTimer:  null,   // 自動再生タイマー
 };
 
 // ─────────────────────────────────────────────
@@ -177,15 +180,19 @@ function _bindStepButtons() {
     await _nextFrame();
 
     try {
-      const solved = SudokuSolver.solve(currentGrid);
+      const result = SudokuSolver.solveWithSteps(currentGrid);
 
-      if (solved) {
-        AppState.solvedGrid = solved;
-        UI.renderSolution('sudoku-solution-grid', currentGrid, solved);
+      if (result) {
+        AppState.solvedGrid = result.solved;
+        AppState.solveSteps = result.steps;
+        UI.renderSolution('sudoku-solution-grid', currentGrid, result.solved);
         UI.showSolveResult(true, '✓ 解答が見つかりました！');
+        document.getElementById('btn-explain').classList.remove('hidden');
       } else {
         AppState.solvedGrid = null;
+        AppState.solveSteps = null;
         UI.showSolveResult(false, '× 解答が見つかりませんでした。入力値を確認してください。');
+        document.getElementById('btn-explain').classList.add('hidden');
       }
 
       UI.hideLoading();
@@ -204,7 +211,9 @@ function _bindStepButtons() {
 
   // ── 最初からやり直す ──
   document.getElementById('btn-restart').addEventListener('click', () => {
+    _stopAutoPlay();
     Object.keys(AppState).forEach(k => { AppState[k] = null; });
+    AppState.explainIndex = -1;
     // カメラ停止 & 入力要素リセット
     Camera.stopCamera();
     document.getElementById('input-gallery').value = '';
@@ -213,6 +222,58 @@ function _bindStepButtons() {
     document.getElementById('detection-error').classList.add('hidden');
     ImageProcessor.resetManual();
     UI.showStep(1);
+  });
+
+  // ── 解説を見る ──
+  document.getElementById('btn-explain').addEventListener('click', () => {
+    if (!AppState.solveSteps || AppState.solveSteps.length === 0) {
+      alert('解法ステップがありません。');
+      return;
+    }
+    AppState.explainIndex = -1;
+    _renderCurrentExplainStep();
+    UI.showStep(5);
+  });
+
+  // ── 解説: 次のステップ ──
+  document.getElementById('btn-explain-next').addEventListener('click', () => {
+    if (!AppState.solveSteps) return;
+    if (AppState.explainIndex < AppState.solveSteps.length - 1) {
+      AppState.explainIndex++;
+      _renderCurrentExplainStep();
+    }
+  });
+
+  // ── 解説: 前のステップ ──
+  document.getElementById('btn-explain-prev').addEventListener('click', () => {
+    if (AppState.explainIndex > -1) {
+      AppState.explainIndex--;
+      _renderCurrentExplainStep();
+    }
+  });
+
+  // ── 解説: 自動再生 ──
+  document.getElementById('btn-explain-auto').addEventListener('click', () => {
+    if (AppState.autoPlayTimer) {
+      _stopAutoPlay();
+      return;
+    }
+    const btn = document.getElementById('btn-explain-auto');
+    btn.textContent = '⏸ 停止';
+    AppState.autoPlayTimer = setInterval(() => {
+      if (AppState.explainIndex < AppState.solveSteps.length - 1) {
+        AppState.explainIndex++;
+        _renderCurrentExplainStep();
+      } else {
+        _stopAutoPlay();
+      }
+    }, 600);
+  });
+
+  // ── 解説: 解答に戻る ──
+  document.getElementById('btn-explain-back').addEventListener('click', () => {
+    _stopAutoPlay();
+    UI.showStep(4);
   });
 }
 
@@ -247,4 +308,25 @@ function _showWarpedCanvas(warpedCanvas) {
 // ─────────────────────────────────────────────
 function _nextFrame() {
   return new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+}
+
+// ─────────────────────────────────────────────
+// 解説ステップ描画ヘルパー
+// ─────────────────────────────────────────────
+function _renderCurrentExplainStep() {
+  UI.renderExplanation(
+    'sudoku-explain-grid',
+    AppState.editedGrid,
+    AppState.solveSteps,
+    AppState.explainIndex
+  );
+}
+
+function _stopAutoPlay() {
+  if (AppState.autoPlayTimer) {
+    clearInterval(AppState.autoPlayTimer);
+    AppState.autoPlayTimer = null;
+  }
+  const btn = document.getElementById('btn-explain-auto');
+  if (btn) btn.textContent = '▶ 自動再生';
 }
