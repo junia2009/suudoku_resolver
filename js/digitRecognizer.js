@@ -1,15 +1,18 @@
 ﻿/**
- * digitRecognizer.js  v1.6.0
+ * digitRecognizer.js  v1.8.0
  *
- * デュアルPSMアプローチ:
- *   - PSM 10 (単一文字) と PSM 13 (Raw line) の2つのOCRワーカーで独立認識
- *   - 異なるセグメンテーションエンジンの結果を統合して精度向上
- *   - 各セルで複数前処理バリエーション × 2 PSMモード = 多数決
+ * トリプルPSMアプローチ + Otsu二値化 + 連結成分ベース切り出し:
+ *   - PSM 7 (単一テキスト行), PSM 10 (単一文字), PSM 13 (Raw line) の3ワーカー
+ *   - 適応的閾値 + Otsu二値化の2系統 × 複数前処理
+ *   - 連結成分解析による数字領域の精密切り出し
+ *   - 信頼度を考慮した衝突解決
  */
 
 const DigitRecognizer = (() => {
+  let _worker7  = null; // PSM 7: single text line
   let _worker10 = null; // PSM 10: single char
   let _worker13 = null; // PSM 13: raw line
+  let _ready7  = false;
   let _ready10 = false;
   let _ready13 = false;
 
@@ -26,6 +29,12 @@ const DigitRecognizer = (() => {
 
   async function _initOCR() {
     const tasks = [];
+    if (!_ready7 || !_worker7) {
+      tasks.push(
+        _initWorker(7).then(w => { _worker7 = w; _ready7 = true; console.log('PSM 7 ready'); })
+          .catch(e => { console.warn('PSM 7 init failed:', e); })
+      );
+    }
     if (!_ready10 || !_worker10) {
       tasks.push(
         _initWorker(10).then(w => { _worker10 = w; _ready10 = true; console.log('PSM 10 ready'); })
@@ -44,21 +53,23 @@ const DigitRecognizer = (() => {
   async function loadModel() { await _initOCR(); }
 
   // ── メイン認識 ──
-  async function recognize(cells, cellsGray, warpedCanvas) {
+  async function recognize(cells, cellsGray, warpedCanvas, cellsOtsu) {
     await loadModel();
-    if (!_worker10 && !_worker13) {
+    if (!_worker7 && !_worker10 && !_worker13) {
       console.error('No OCR workers available');
       return Array.from({ length: 9 }, () => new Array(9).fill(0));
     }
 
     const gray = cellsGray || cells;
     const binary = cells;
+    const otsu = cellsOtsu || null;
     if (!gray) {
       console.error('No cell data');
       return Array.from({ length: 9 }, () => new Array(9).fill(0));
     }
 
     const grid = Array.from({ length: 9 }, () => new Array(9).fill(0));
+    const confGrid = Array.from({ length: 9 }, () => new Array(9).fill(0));
     let recognized = 0;
     let skipped = 0;
 
@@ -66,29 +77,32 @@ const DigitRecognizer = (() => {
       for (let c = 0; c < 9; c++) {
         const cellGray = gray[r][c];
         const cellBin = binary ? binary[r][c] : null;
+        const cellOtsu = otsu ? otsu[r][c] : null;
         if (!cellGray) { skipped++; continue; }
         if (_isEmpty(cellGray)) { skipped++; continue; }
 
-        const digit = await _recognizeCell(cellGray, cellBin);
-        if (digit > 0) {
-          grid[r][c] = digit;
+        const result = await _recognizeCell(cellGray, cellBin, cellOtsu);
+        if (result.digit > 0) {
+          grid[r][c] = result.digit;
+          confGrid[r][c] = result.conf;
           recognized++;
         }
       }
     }
 
     console.log('Recognized: ' + recognized + ', skipped: ' + skipped);
-    _resolveConflicts(grid);
+    _resolveConflicts(grid, confGrid);
     const final = grid.flat().filter(v => v !== 0).length;
     console.log('After conflict resolution: ' + final + ' digits');
     return grid;
   }
 
-  // ── 空セル判定 ──
+  // ── 空セル判定 (改善版) ──
   function _isEmpty(cellImageData) {
     const d = cellImageData.data;
     const w = cellImageData.width;
     const h = cellImageData.height;
+    // 中央60%の領域で判定（マージン20%）
     const margin = Math.floor(Math.min(w, h) * 0.2);
     let sum = 0, sumSq = 0, count = 0;
     for (let y = margin; y < h - margin; y++) {
@@ -100,83 +114,138 @@ const DigitRecognizer = (() => {
     if (count === 0) return true;
     const mean = sum / count;
     const stddev = Math.sqrt(Math.max(0, sumSq / count - mean * mean));
+
+    // 暗いピクセルの割合を計算（動的閾値）
     let darkCount = 0;
-    const threshold = mean * 0.6;
+    const threshold = Math.min(mean * 0.6, mean - stddev * 1.5);
     for (let y = margin; y < h - margin; y++) {
       for (let x = margin; x < w - margin; x++) {
         if (d[(y * w + x) * 4] < threshold) darkCount++;
       }
     }
-    return stddev < 12 || (darkCount / count) < 0.01;
+    const darkRatio = darkCount / count;
+
+    // stddev < 8 → ほぼ均一（空白）
+    // darkRatio < 0.005 → 暗いピクセルがほぼ無い
+    return stddev < 8 || darkRatio < 0.005;
   }
 
-  // ── セル認識: デュアルPSM × 複数前処理 ──
-  async function _recognizeCell(cellGray, cellBin) {
+  // ── セル認識: トリプルPSM × 複数前処理 + Otsu ──
+  async function _recognizeCell(cellGray, cellBin, cellOtsu) {
     // 前処理バリエーション生成
     const variants = [];
-    // グレースケール系
+    // グレースケール系 (3x, 4x, コントラスト強調)
     variants.push(_prepareCell(cellGray, false, 3));
     variants.push(_prepareCell(cellGray, false, 4));
     variants.push(_prepareCell(cellGray, true, 3));
     variants.push(_prepareCell(cellGray, true, 4));
-    // 数字中心切り出し
-    const centered = _centerDigit(cellGray);
-    if (centered) {
-      variants.push(_prepareCell(centered, false, 3));
-      variants.push(_prepareCell(centered, true, 3));
+
+    // 連結成分ベースの数字切り出し
+    const ccCentered = _centerDigitCC(cellGray);
+    if (ccCentered) {
+      variants.push(_prepareCell(ccCentered, false, 3));
+      variants.push(_prepareCell(ccCentered, true, 3));
+    } else {
+      // フォールバック: 従来のバウンディングボックス切り出し
+      const centered = _centerDigit(cellGray);
+      if (centered) {
+        variants.push(_prepareCell(centered, false, 3));
+        variants.push(_prepareCell(centered, true, 3));
+      }
     }
-    // 二値化セル
+
+    // 二値化セル (適応的閾値)
     if (cellBin) {
       variants.push(_prepareBinaryCell(cellBin, 3));
       variants.push(_prepareBinaryCell(cellBin, 4));
     }
+    // Otsu 二値化セル
+    if (cellOtsu) {
+      variants.push(_prepareBinaryCell(cellOtsu, 3));
+      variants.push(_prepareBinaryCell(cellOtsu, 4));
+    }
 
     const votes = {};
     const confs = {};
+    const maxConfs = {};
 
     // PSM 10 で全バリエーション認識
     if (_worker10 && _ready10) {
       for (const canvas of variants) {
         const r = await _ocrOne(_worker10, canvas);
-        if (r) { votes[r.digit] = (votes[r.digit] || 0) + 1; if (!confs[r.digit] || r.conf > confs[r.digit]) confs[r.digit] = r.conf; }
+        if (r) {
+          votes[r.digit] = (votes[r.digit] || 0) + 1;
+          confs[r.digit] = (confs[r.digit] || 0) + r.conf;
+          if (!maxConfs[r.digit] || r.conf > maxConfs[r.digit]) maxConfs[r.digit] = r.conf;
+        }
       }
     }
 
-    // PSM 13 で主要バリエーション認識 (全部はやらず速度考慮)
+    // PSM 7 で主要バリエーション認識
+    if (_worker7 && _ready7) {
+      const psm7variants = [
+        _prepareCell(cellGray, false, 3),
+        _prepareCell(cellGray, true, 3),
+        _prepareCell(cellGray, false, 4),
+      ];
+      if (ccCentered) {
+        psm7variants.push(_prepareCell(ccCentered, false, 3));
+      }
+      if (cellOtsu) {
+        psm7variants.push(_prepareBinaryCell(cellOtsu, 3));
+      }
+      for (const canvas of psm7variants) {
+        const r = await _ocrOne(_worker7, canvas);
+        if (r) {
+          votes[r.digit] = (votes[r.digit] || 0) + 1;
+          confs[r.digit] = (confs[r.digit] || 0) + r.conf;
+          if (!maxConfs[r.digit] || r.conf > maxConfs[r.digit]) maxConfs[r.digit] = r.conf;
+        }
+      }
+    }
+
+    // PSM 13 で主要バリエーション認識
     if (_worker13 && _ready13) {
-      // グレー3x, グレー4x, コントラスト3x, centered3x → 最大4つ
       const psm13variants = [
         _prepareCell(cellGray, false, 3),
         _prepareCell(cellGray, false, 4),
         _prepareCell(cellGray, true, 3),
       ];
-      if (centered) {
-        psm13variants.push(_prepareCell(centered, false, 3));
+      if (ccCentered) {
+        psm13variants.push(_prepareCell(ccCentered, false, 3));
       }
       for (const canvas of psm13variants) {
         const r = await _ocrOne(_worker13, canvas);
-        if (r) { votes[r.digit] = (votes[r.digit] || 0) + 1; if (!confs[r.digit] || r.conf > confs[r.digit]) confs[r.digit] = r.conf; }
+        if (r) {
+          votes[r.digit] = (votes[r.digit] || 0) + 1;
+          confs[r.digit] = (confs[r.digit] || 0) + r.conf;
+          if (!maxConfs[r.digit] || r.conf > maxConfs[r.digit]) maxConfs[r.digit] = r.conf;
+        }
       }
     }
 
     const digits = Object.keys(votes).map(Number);
-    if (digits.length === 0) return 0;
+    if (digits.length === 0) return { digit: 0, conf: 0 };
 
+    // スコアリング: 投票数 × 平均信頼度 でランク付け
     digits.sort((a, b) => {
       const vd = votes[b] - votes[a];
       if (vd !== 0) return vd;
-      return (confs[b] || 0) - (confs[a] || 0);
+      // 同票なら平均信頼度で比較
+      const avgA = confs[a] / votes[a];
+      const avgB = confs[b] / votes[b];
+      return avgB - avgA;
     });
 
     const best = digits[0];
     const bestVotes = votes[best];
-    const bestConf = confs[best] || 0;
+    const bestMaxConf = maxConfs[best] || 0;
 
-    // 2票以上、または1票でも信頼度65以上
-    if (bestVotes >= 2 || bestConf >= 65) {
-      return best;
+    // 2票以上、または1票でも最大信頼度60以上
+    if (bestVotes >= 2 || bestMaxConf >= 60) {
+      return { digit: best, conf: bestMaxConf };
     }
-    return 0;
+    return { digit: 0, conf: 0 };
   }
 
   // ── 個別OCR実行 ──
@@ -252,7 +321,140 @@ const DigitRecognizer = (() => {
     return canvas;
   }
 
-  // ── 数字の中心切り出し ──
+  // ── 連結成分ベースの数字中心切り出し (改善版) ──
+  function _centerDigitCC(cellImageData) {
+    const w = cellImageData.width;
+    const h = cellImageData.height;
+    const d = cellImageData.data;
+
+    // Otsu的な二値化: ヒストグラムから自動閾値決定
+    const hist = new Array(256).fill(0);
+    for (let i = 0; i < d.length; i += 4) hist[d[i]]++;
+    const total = w * h;
+    let sumAll = 0;
+    for (let i = 0; i < 256; i++) sumAll += i * hist[i];
+
+    let sumB = 0, wB = 0, maxVar = 0, bestThresh = 128;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB;
+      const mF = (sumAll - sumB) / wF;
+      const variance = wB * wF * (mB - mF) * (mB - mF);
+      if (variance > maxVar) { maxVar = variance; bestThresh = t; }
+    }
+
+    // 二値化 → 連結成分のラベリング
+    const binary = new Uint8Array(w * h);
+    const margin = Math.floor(Math.min(w, h) * 0.08);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        // マージン内はスキップ（グリッド線除去）
+        if (y < margin || y >= h - margin || x < margin || x >= w - margin) continue;
+        binary[y * w + x] = d[(y * w + x) * 4] < bestThresh ? 1 : 0;
+      }
+    }
+
+    // 連結成分検出（4近傍）
+    const labels = new Int32Array(w * h);
+    let nextLabel = 1;
+    const components = []; // [{minX, maxX, minY, maxY, area}]
+
+    for (let y = margin; y < h - margin; y++) {
+      for (let x = margin; x < w - margin; x++) {
+        if (binary[y * w + x] === 1 && labels[y * w + x] === 0) {
+          // BFS
+          const comp = { minX: x, maxX: x, minY: y, maxY: y, area: 0 };
+          const queue = [[x, y]];
+          labels[y * w + x] = nextLabel;
+          while (queue.length > 0) {
+            const [cx, cy] = queue.shift();
+            comp.area++;
+            if (cx < comp.minX) comp.minX = cx;
+            if (cx > comp.maxX) comp.maxX = cx;
+            if (cy < comp.minY) comp.minY = cy;
+            if (cy > comp.maxY) comp.maxY = cy;
+            const neighbors = [[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]];
+            for (const [nx, ny] of neighbors) {
+              if (nx >= margin && nx < w - margin && ny >= margin && ny < h - margin
+                  && binary[ny * w + nx] === 1 && labels[ny * w + nx] === 0) {
+                labels[ny * w + nx] = nextLabel;
+                queue.push([nx, ny]);
+              }
+            }
+          }
+          components.push(comp);
+          nextLabel++;
+        }
+      }
+    }
+
+    if (components.length === 0) return null;
+
+    // ノイズ除去: 小さすぎる成分を除外（セル面積の2%未満）
+    const minArea = w * h * 0.02;
+    const filtered = components.filter(c => c.area >= minArea);
+    if (filtered.length === 0) return null;
+
+    // 最大の連結成分を数字として選択（中央に近いものを優先）
+    const centerX = w / 2;
+    const centerY = h / 2;
+    filtered.sort((a, b) => {
+      // まず面積でソート（大きい順）
+      const areaDiff = b.area - a.area;
+      if (Math.abs(areaDiff) > minArea) return areaDiff;
+      // 同程度なら中央に近い方を優先
+      const distA = Math.abs((a.minX + a.maxX) / 2 - centerX) + Math.abs((a.minY + a.maxY) / 2 - centerY);
+      const distB = Math.abs((b.minX + b.maxX) / 2 - centerX) + Math.abs((b.minY + b.maxY) / 2 - centerY);
+      return distA - distB;
+    });
+
+    // 近接した成分をマージ（数字が分離している場合: 例えば '4' の上部と下部）
+    let bbox = { ...filtered[0] };
+    for (let i = 1; i < filtered.length; i++) {
+      const c = filtered[i];
+      const gap = Math.min(
+        Math.abs(c.minX - bbox.maxX), Math.abs(bbox.minX - c.maxX),
+        Math.abs(c.minY - bbox.maxY), Math.abs(bbox.minY - c.maxY)
+      );
+      // セルサイズの 20% 以内ならマージ
+      if (gap < Math.min(w, h) * 0.2) {
+        bbox.minX = Math.min(bbox.minX, c.minX);
+        bbox.maxX = Math.max(bbox.maxX, c.maxX);
+        bbox.minY = Math.min(bbox.minY, c.minY);
+        bbox.maxY = Math.max(bbox.maxY, c.maxY);
+      }
+    }
+
+    const dw = bbox.maxX - bbox.minX + 1;
+    const dh = bbox.maxY - bbox.minY + 1;
+    if (dw < 4 || dh < 4) return null;
+
+    // 正方形に切り出し、パディング付き
+    const side = Math.max(dw, dh);
+    const outSize = Math.round(side * 1.4);
+    const ox = Math.round((outSize - dw) / 2);
+    const oy = Math.round((outSize - dh) / 2);
+    const out = new ImageData(outSize, outSize);
+    for (let i = 0; i < out.data.length; i += 4) {
+      out.data[i] = out.data[i + 1] = out.data[i + 2] = 255;
+      out.data[i + 3] = 255;
+    }
+    for (let y = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++) {
+        const srcIdx = ((bbox.minY + y) * w + (bbox.minX + x)) * 4;
+        const dstIdx = ((oy + y) * outSize + (ox + x)) * 4;
+        out.data[dstIdx] = out.data[dstIdx + 1] = out.data[dstIdx + 2] = d[srcIdx];
+        out.data[dstIdx + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+  // ── 数字の中心切り出し (従来版 フォールバック) ──
   function _centerDigit(cellImageData) {
     const w = cellImageData.width;
     const h = cellImageData.height;
@@ -312,29 +514,60 @@ const DigitRecognizer = (() => {
     }
   }
 
-  // ── 数独制約チェック ──
-  function _resolveConflicts(grid) {
+  // ── 信頼度を考慮した数独制約チェック ──
+  function _resolveConflicts(grid, confGrid) {
     let changed = true;
     while (changed) {
       changed = false;
+
+      // 行チェック
       for (let row = 0; row < 9; row++) {
-        const seen = {};
+        const seen = {}; // digit → {col, conf}
         for (let col = 0; col < 9; col++) {
           const v = grid[row][col];
           if (v === 0) continue;
-          if (seen[v] !== undefined) { grid[row][col] = 0; changed = true; }
-          else seen[v] = col;
+          if (seen[v] !== undefined) {
+            // 信頼度が低い方を削除
+            const prevCol = seen[v].col;
+            const prevConf = seen[v].conf;
+            const curConf = confGrid[row][col];
+            if (curConf < prevConf) {
+              grid[row][col] = 0; confGrid[row][col] = 0;
+            } else {
+              grid[row][prevCol] = 0; confGrid[row][prevCol] = 0;
+              seen[v] = { col, conf: curConf };
+            }
+            changed = true;
+          } else {
+            seen[v] = { col, conf: confGrid[row][col] };
+          }
         }
       }
+
+      // 列チェック
       for (let col = 0; col < 9; col++) {
         const seen = {};
         for (let row = 0; row < 9; row++) {
           const v = grid[row][col];
           if (v === 0) continue;
-          if (seen[v] !== undefined) { grid[row][col] = 0; changed = true; }
-          else seen[v] = row;
+          if (seen[v] !== undefined) {
+            const prevRow = seen[v].row;
+            const prevConf = seen[v].conf;
+            const curConf = confGrid[row][col];
+            if (curConf < prevConf) {
+              grid[row][col] = 0; confGrid[row][col] = 0;
+            } else {
+              grid[prevRow][col] = 0; confGrid[prevRow][col] = 0;
+              seen[v] = { row, conf: curConf };
+            }
+            changed = true;
+          } else {
+            seen[v] = { row, conf: confGrid[row][col] };
+          }
         }
       }
+
+      // ボックスチェック
       for (let br = 0; br < 9; br += 3) {
         for (let bc = 0; bc < 9; bc += 3) {
           const seen = {};
@@ -342,8 +575,21 @@ const DigitRecognizer = (() => {
             for (let c = bc; c < bc + 3; c++) {
               const v = grid[r][c];
               if (v === 0) continue;
-              if (seen[v]) { grid[r][c] = 0; changed = true; }
-              else seen[v] = true;
+              if (seen[v]) {
+                const pr = seen[v].r;
+                const pc = seen[v].c;
+                const prevConf = seen[v].conf;
+                const curConf = confGrid[r][c];
+                if (curConf < prevConf) {
+                  grid[r][c] = 0; confGrid[r][c] = 0;
+                } else {
+                  grid[pr][pc] = 0; confGrid[pr][pc] = 0;
+                  seen[v] = { r, c, conf: curConf };
+                }
+                changed = true;
+              } else {
+                seen[v] = { r, c, conf: confGrid[r][c] };
+              }
             }
           }
         }
@@ -352,6 +598,7 @@ const DigitRecognizer = (() => {
   }
 
   async function terminate() {
+    if (_worker7)  { await _worker7.terminate();  _worker7  = null; _ready7  = false; }
     if (_worker10) { await _worker10.terminate(); _worker10 = null; _ready10 = false; }
     if (_worker13) { await _worker13.terminate(); _worker13 = null; _ready13 = false; }
   }

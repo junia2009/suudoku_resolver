@@ -15,7 +15,7 @@
  */
 
 const ImageProcessor = (() => {
-  const WARP_SIZE = 540; // 歪み補正後の正方形サイズ (px) — 9×60で高解像度
+  const WARP_SIZE = 810; // 歪み補正後の正方形サイズ (px) — 9×90で高解像度
   const CELL_SIZE = WARP_SIZE / 9;
 
   let _cvReady = false;
@@ -109,6 +109,7 @@ const ImageProcessor = (() => {
         warped: _matToCanvas(warped, WARP_SIZE, WARP_SIZE),
         cells: cellData.binary,
         cellsGray: cellData.gray,
+        cellsOtsu: cellData.otsu,
       };
       warped.delete();
       return result;
@@ -270,6 +271,7 @@ const ImageProcessor = (() => {
     const CS = Math.floor(CELL_SIZE);
     const cells = [];
     const cellsGray = [];
+    const cellsOtsu = [];
     const tmpCanvas = document.createElement('canvas');
     tmpCanvas.width  = CS;
     tmpCanvas.height = CS;
@@ -283,6 +285,7 @@ const ImageProcessor = (() => {
     for (let row = 0; row < 9; row++) {
       cells[row] = [];
       cellsGray[row] = [];
+      cellsOtsu[row] = [];
       for (let col = 0; col < 9; col++) {
         let x, y, w, h;
         if (gridLines) {
@@ -316,19 +319,26 @@ const ImageProcessor = (() => {
         // セルのグレースケール ROI を取得
         const cellGray = grayEq.roi(new cv.Rect(x, y, w, h));
 
-        // ──── グレースケールセル (OCR用): リサイズのみ ────
+        // ──── シャープニング: ぼやけ補正 ────
+        const sharpened = new cv.Mat();
+        const blurForSharp = new cv.Mat();
+        cv.GaussianBlur(cellGray, blurForSharp, new cv.Size(0, 0), 2);
+        cv.addWeighted(cellGray, 1.5, blurForSharp, -0.5, 0, sharpened);
+        blurForSharp.delete();
+
+        // ──── グレースケールセル (OCR用): シャープニング済みをリサイズ ────
         const grayResized = new cv.Mat();
-        cv.resize(cellGray, grayResized, new cv.Size(CS, CS));
+        cv.resize(sharpened, grayResized, new cv.Size(CS, CS));
         const grayRoiCanvas = _matToCanvas(grayResized, CS, CS);
         grayCtx.clearRect(0, 0, CS, CS);
         grayCtx.drawImage(grayRoiCanvas, 0, 0);
         cellsGray[row][col] = grayCtx.getImageData(0, 0, CS, CS);
         grayResized.delete();
 
-        // ──── 二値化セル (CNN用): 適応的閾値 + ノイズ除去 ────
+        // ──── 二値化セル: 適応的閾値 + ノイズ除去 ────
         // ガウシアンブラーで微小ノイズを軽減
         const blurred = new cv.Mat();
-        cv.GaussianBlur(cellGray, blurred, new cv.Size(3, 3), 0);
+        cv.GaussianBlur(sharpened, blurred, new cv.Size(3, 3), 0);
 
         // セル単位で適応的閾値処理
         const cellThresh = new cv.Mat();
@@ -341,12 +351,18 @@ const ImageProcessor = (() => {
           blockSize, 4
         );
 
+        // ──── Otsu 二値化バリエーション ────
+        const cellOtsu = new cv.Mat();
+        cv.threshold(blurred, cellOtsu, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+
         // グリッド線除去: 境界ピクセルをゼロ化
         const borderW = Math.max(2, Math.floor(Math.min(w, h) * 0.04));
         _clearCellBorder(cellThresh, borderW);
+        _clearCellBorder(cellOtsu, borderW);
 
         // ノイズ除去: 小さな連結成分を除去
         _removeSmallComponents(cellThresh, Math.min(w, h));
+        _removeSmallComponents(cellOtsu, Math.min(w, h));
 
         // 統一サイズ (CS×CS) にリサイズして ImageData に変換
         const resized = new cv.Mat();
@@ -357,16 +373,27 @@ const ImageProcessor = (() => {
         tmpCtx.drawImage(roiCanvas, 0, 0);
         cells[row][col] = tmpCtx.getImageData(0, 0, CS, CS);
 
+        // Otsu 二値化セルも保存
+        const otsuResized = new cv.Mat();
+        cv.resize(cellOtsu, otsuResized, new cv.Size(CS, CS));
+        const otsuCanvas = _matToCanvas(otsuResized, CS, CS);
+        tmpCtx.clearRect(0, 0, CS, CS);
+        tmpCtx.drawImage(otsuCanvas, 0, 0);
+        cellsOtsu[row][col] = tmpCtx.getImageData(0, 0, CS, CS);
+
         cellGray.delete();
+        sharpened.delete();
         blurred.delete();
         cellThresh.delete();
+        cellOtsu.delete();
         resized.delete();
+        otsuResized.delete();
       }
     }
 
     gray.delete();
     grayEq.delete();
-    return { binary: cells, gray: cellsGray };
+    return { binary: cells, gray: cellsGray, otsu: cellsOtsu };
   }
 
   // ─────────────────────────────────────────────
@@ -578,7 +605,7 @@ const ImageProcessor = (() => {
 
       // イベントを発火して UI に通知
       const event = new CustomEvent('manualCornersComplete', {
-        detail: { cells: cellData.binary, cellsGray: cellData.gray, warpedCanvas }
+        detail: { cells: cellData.binary, cellsGray: cellData.gray, cellsOtsu: cellData.otsu, warpedCanvas }
       });
       document.dispatchEvent(event);
     } finally {
