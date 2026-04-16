@@ -187,14 +187,16 @@ const SudokuSolver = (() => {
         const propSteps = [];
         const propOk = _propagateWithSteps(grid, propSteps);
 
-        if (propOk && _backtrackWithSteps(grid, [])) {
-          // 成功 → 仮定と制約伝播ステップを記録
+        const recurseSteps = [];
+        if (propOk && _backtrackWithSteps(grid, recurseSteps)) {
+          // 成功 → 仮定 → 制約伝播 → 再帰先ステップの順で記録
           steps.push({
             row, col, num,
             reason: 'backtrack',
             detail: `R${row+1}C${col+1}: 候補から ${num} を仮定`
           });
           propSteps.forEach(s => steps.push(s));
+          recurseSteps.forEach(s => steps.push(s));
           return true;
         }
 
