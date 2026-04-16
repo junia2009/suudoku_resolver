@@ -500,6 +500,7 @@ canvas {
   font-family: var(--font-mono);
   cursor: pointer;
   transition: background 0.15s, box-shadow 0.15s;
+  -webkit-user-select: none;
   user-select: none;
   position: relative;
   aspect-ratio: 1;
@@ -611,6 +612,7 @@ canvas {
   justify-content: center;
   gap: 20px;
   z-index: 999;
+  -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
 }
 
